@@ -8,6 +8,8 @@ services:
     envVars:
       - key: ENV
         value: production
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: APP_PASSWORD
         sync: false
       - key: PREMIUM_ENABLED
