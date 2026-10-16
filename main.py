@@ -26,6 +26,7 @@ load_dotenv()
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 APP_PASSWORD   = os.getenv("APP_PASSWORD", "")
+PREMIUM_ENABLED = os.getenv("PREMIUM_ENABLED", "false").lower() == "true"
 GROQ_KEY       = os.getenv("GROQ_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 HIBP_KEY       = os.getenv("HIBP_API_KEY", "")
@@ -200,6 +201,8 @@ def build_prompt(mode: str, query: str, ctx: str = "") -> str:
 
 # ── AI Report ─────────────────────────────────────────────────────────────────
 async def ai_generate(query: str, mode: str, ctx: str = "") -> dict:
+    if not PREMIUM_ENABLED:
+        raise HTTPException(402, detail="Le rapport IA est une fonctionnalité Premium.")
     if not GROQ_KEY:
         raise HTTPException(400, detail="GROQ_API_KEY manquante dans .env")
     prompt = build_prompt(mode, query, ctx)
@@ -268,6 +271,7 @@ async def api_batch(req: BatchRequest):
 @app.get("/api/config")
 def api_config():
     return {
+        "premium":    PREMIUM_ENABLED,
         "groq":       bool(GROQ_KEY),
         "pappers":    bool(PAPPERS_KEY),
         "hibp":       bool(HIBP_KEY),
@@ -437,6 +441,8 @@ async def api_username(req: UsernameRequest):
 # ── PDF Export (fpdf2) ────────────────────────────────────────────────────────
 @app.post("/api/export/pdf")
 async def export_pdf(req: PDFRequest):
+    if not PREMIUM_ENABLED:
+        raise HTTPException(402, detail="L'export PDF est une fonctionnalité Premium.")
     try:
         from fpdf import FPDF
     except ImportError:

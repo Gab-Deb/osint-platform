@@ -10,7 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <style>
-:root{--bg:#07090f;--bg2:#0d1017;--bg3:#141920;--border:#1e2530;--text:#e2e8f0;--muted:#64748b;--dim:#334155;--cyan:#06d6a0;--blue:#3b82f6;--purple:#8b5cf6;--pink:#ec4899;--amber:#f59e0b;--red:#ef4444;--green:#22c55e}
+:root{--bg:#0b0c0f;--bg2:#131418;--bg3:#1a1c21;--border:#26282e;--text:#e9eaed;--muted:#8b8d96;--dim:#54565f;--cyan:#5b7cfa;--blue:#5b7cfa;--purple:#9376ff;--pink:#ec6a9a;--amber:#e2983b;--red:#f0576a;--green:#34c777}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;overflow-x:hidden;height:100vh;display:flex;flex-direction:column}
 #root{flex:1;display:flex;flex-direction:column;overflow:hidden}
@@ -139,8 +139,8 @@ const S = {
   card: (extra={}) => ({background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,padding:18,...extra}),
   input: {background:"var(--bg)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",color:"var(--text)",fontSize:13,outline:"none",width:"100%",fontFamily:"'Inter',sans-serif"},
   btn: (col="var(--cyan)", ghost=false) => ghost
-    ? {background:`${col}18`,border:`1px solid ${col}55`,borderRadius:7,padding:"8px 16px",color:col,cursor:"pointer",fontWeight:600,fontSize:12,fontFamily:"'Inter',sans-serif",transition:"all .15s"}
-    : {background:col,color:"#080c14",border:"none",borderRadius:7,padding:"9px 18px",cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"'Inter',sans-serif",transition:"opacity .15s"},
+    ? {background:`${col}12`,border:`1px solid ${col}40`,borderRadius:7,padding:"8px 16px",color:col,cursor:"pointer",fontWeight:600,fontSize:12,fontFamily:"'Inter',sans-serif",transition:"all .15s"}
+    : {background:col,color:"#ffffff",border:"none",borderRadius:7,padding:"9px 18px",cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"'Inter',sans-serif",transition:"opacity .15s"},
 };
 
 /* ══ D3 Graph ═══════════════════════════════════════════════════════════════ */
@@ -154,7 +154,7 @@ function GraphView({data}) {
     const svg=d3.select(el).attr("viewBox",`0 0 ${W} ${H}`).style("background","var(--bg)");
     const defs=svg.append("defs");
     defs.append("marker").attr("id","a").attr("viewBox","0 -5 10 10").attr("refX",22).attr("refY",0).attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto")
-        .append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#334155");
+        .append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#54565f");
     const g=svg.append("g");
     svg.call(d3.zoom().scaleExtent([.3,3]).on("zoom",e=>g.attr("transform",e.transform)));
     const nodes=data.nodes.map(n=>({...n}));
@@ -164,8 +164,8 @@ function GraphView({data}) {
       .force("charge",d3.forceManyBody().strength(-280))
       .force("center",d3.forceCenter(W/2,H/2))
       .force("coll",d3.forceCollide(38));
-    const link=g.append("g").selectAll("line").data(edges).enter().append("line").attr("stroke","#1e2530").attr("stroke-width",1.5).attr("marker-end","url(#a)");
-    const lbl=g.append("g").selectAll("text").data(edges).enter().append("text").attr("font-size",8).attr("fill","#334155").attr("text-anchor","middle").text(d=>d.label||"");
+    const link=g.append("g").selectAll("line").data(edges).enter().append("line").attr("stroke","#26282e").attr("stroke-width",1.5).attr("marker-end","url(#a)");
+    const lbl=g.append("g").selectAll("text").data(edges).enter().append("text").attr("font-size",8).attr("fill","#54565f").attr("text-anchor","middle").text(d=>d.label||"");
     const node=g.append("g").selectAll("g").data(nodes).enter().append("g").style("cursor","pointer")
       .call(d3.drag().on("start",(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y;}).on("drag",(e,d)=>{d.fx=e.x;d.fy=e.y;}).on("end",(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}))
       .on("click",(e,d)=>{e.stopPropagation();setSel(d);});
@@ -298,7 +298,8 @@ function ApiResultsPanel({results, queryType, loading}) {
 
 /* ══ APP principal ════════════════════════════════════════════════════════════ */
 function App() {
-  const [screen, setScreen]           = useState("home");
+  const [screen, setScreen]           = useState("landing");
+  const [menuOpen, setMenuOpen]       = useState(false);
   const [mode, setMode]               = useState(null);
   const [query, setQuery]             = useState("");
   const [ctx, setCtx]                 = useState("");
@@ -341,6 +342,7 @@ function App() {
     setScreen("home"); setMode(null); setQuery(""); setCtx("");
     setReport(null); setApiResults(null); setReportTab("rapport");
   };
+  const goLanding = () => { setScreen("landing"); setMode(null); setQuery(""); setCtx(""); setReport(null); setApiResults(null); };
 
   // Generate report
   const generate = async () => {
@@ -468,35 +470,119 @@ function App() {
     <div style={{display:"flex",flexDirection:"column",height:"100vh",overflow:"hidden"}}>
 
       {/* ── HEADER ── */}
-      <div style={{background:"rgba(13,16,23,.98)",backdropFilter:"blur(20px)",borderBottom:"1px solid var(--border)",padding:"0 20px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:8}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={reset}>
+      <div style={{background:"rgba(11,12,15,.9)",backdropFilter:"blur(20px)",borderBottom:"1px solid var(--border)",padding:"0 20px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={goLanding}>
           <div style={{width:28,height:28,borderRadius:7,background:`linear-gradient(135deg,${mc},var(--purple))`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🔭</div>
-          <span style={{fontWeight:800,fontSize:14,color:mc,letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace"}}>OSINT</span>
+          <span style={{fontWeight:800,fontSize:15,color:"var(--text)",letterSpacing:-.3,fontFamily:"'Inter',sans-serif"}}>OSINT</span>
         </div>
-        <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-          {[
-            {label:"🔍 Username", s:"username", c:"var(--blue)"},
-            {label:"📦 Batch",    s:"batch",    c:"var(--purple)"},
-            {label:"🕐 Historique", s:"history",c:"var(--amber)", badge:history.length},
-            {label:"📋 Dossiers",  s:"cases",   c:"var(--amber)"},
-            {label:"🗺️ Framework", s:"framework",c:"var(--cyan)"},
-          ].map(b=>(
-            <button key={b.s} onClick={()=>setScreen(b.s)}
-              style={{...S.btn(b.c, true), fontSize:11, padding:"5px 10px", position:"relative"}}>
-              {b.label}
-              {b.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:b.c,color:"var(--bg)",borderRadius:"50%",width:14,height:14,fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>{Math.min(b.badge,9)}</span>}
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{position:"relative"}}>
+            <button onClick={()=>setMenuOpen(o=>!o)} style={{...S.btn("var(--dim)",true),fontSize:11,padding:"5px 10px",display:"flex",alignItems:"center",gap:6}}>
+              ☰ Menu
+              {history.length>0&&<span style={{background:"var(--amber)",color:"var(--bg)",borderRadius:"50%",width:14,height:14,fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>{Math.min(history.length,9)}</span>}
             </button>
-          ))}
-          <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",background:config.groq?"rgba(34,197,94,.08)":"rgba(239,68,68,.08)",border:`1px solid ${config.groq?"rgba(34,197,94,.3)":"rgba(239,68,68,.3)"}`,borderRadius:6,fontSize:10,color:config.groq?"var(--green)":"var(--red)"}}>
-            <span style={{width:6,height:6,borderRadius:"50%",background:config.groq?"var(--green)":"var(--red)",display:"inline-block"}}/>
-            {config.groq?"IA connectée":"IA non configurée"}
+            {menuOpen&&(<>
+              <div onClick={()=>setMenuOpen(false)} style={{position:"fixed",inset:0,zIndex:40}}/>
+              <div style={{position:"absolute",top:"calc(100% + 8px)",right:0,background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,padding:6,minWidth:190,zIndex:50,boxShadow:"0 10px 30px rgba(0,0,0,.35)"}}>
+                {[
+                  {label:"🔍 Username", s:"username", c:"var(--blue)"},
+                  {label:"📦 Batch",    s:"batch",    c:"var(--purple)"},
+                  {label:"🕐 Historique", s:"history",c:"var(--amber)", badge:history.length},
+                  {label:"📋 Dossiers",  s:"cases",   c:"var(--amber)"},
+                  {label:"🗺️ Framework", s:"framework",c:"var(--cyan)"},
+                  {label:"💳 Formule",   s:"pricing", c:"var(--green)"},
+                ].map(b=>(
+                  <button key={b.s} onClick={()=>{setScreen(b.s);setMenuOpen(false);}}
+                    style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",background:"transparent",border:"none",borderRadius:7,padding:"9px 10px",color:"var(--text)",cursor:"pointer",fontSize:13,fontFamily:"'Inter',sans-serif",textAlign:"left"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="var(--bg3)"}
+                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                    <span>{b.label}</span>
+                    {b.badge>0&&<span style={{background:b.c,color:"var(--bg)",borderRadius:10,padding:"1px 7px",fontSize:10,fontWeight:700}}>{Math.min(b.badge,9)}</span>}
+                  </button>
+                ))}
+              </div>
+            </>)}
           </div>
-          {screen!=="home"&&<button onClick={reset} style={{...S.btn("var(--dim)",true),fontSize:11,padding:"5px 10px"}}>← Accueil</button>}
+          <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",background:config.premium?"rgba(34,197,94,.08)":"rgba(148,163,184,.08)",border:`1px solid ${config.premium?"rgba(34,197,94,.3)":"var(--border)"}`,borderRadius:6,fontSize:10,color:config.premium?"var(--green)":"var(--muted)"}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:config.premium?"var(--green)":"var(--dim)",display:"inline-block"}}/>
+            {config.premium?"Premium actif":"Mode gratuit"}
+          </div>
+          {screen!=="home"&&screen!=="landing"&&<button onClick={reset} style={{...S.btn("var(--dim)",true),fontSize:11,padding:"5px 10px"}}>← Accueil</button>}
         </div>
       </div>
 
       {/* ── CONTENT ── */}
       <div style={{flex:1,overflow:isFullH?"hidden":"auto",display:isFullH?"flex":"block",flexDirection:"column"}}>
+
+      {/* LANDING */}
+      {screen==="landing"&&(
+        <div className="fade">
+          {/* Hero */}
+          <div style={{textAlign:"center",padding:"80px 16px 56px",borderBottom:"1px solid var(--border)"}}>
+            <div style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 12px",background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:20,fontSize:11,color:"var(--muted)",marginBottom:24}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green)",display:"inline-block"}}/>
+              Gratuit pour commencer — aucune carte bancaire requise
+            </div>
+            <div style={{fontSize:38,fontWeight:800,color:"var(--text)",marginBottom:14,lineHeight:1.2,maxWidth:620,margin:"0 auto 14px"}}>
+              Vérifiez qui est en face de vous, en quelques secondes
+            </div>
+            <div style={{fontSize:15,color:"var(--muted)",maxWidth:520,margin:"0 auto 32px",lineHeight:1.6}}>
+              Une recherche, des dizaines de sources publiques croisées automatiquement : entreprises, réseaux sociaux, fuites de données, sanctions, infrastructure — le tout dans un rapport clair.
+            </div>
+            <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+              <button onClick={()=>setScreen("home")} style={{...S.btn("var(--cyan)"),padding:"12px 24px",fontSize:14}}>Commencer gratuitement →</button>
+              <button onClick={()=>setScreen("pricing")} style={{...S.btn("var(--dim)",true),padding:"12px 24px",fontSize:14}}>Voir les formules</button>
+            </div>
+          </div>
+
+          {/* Features */}
+          <div style={{maxWidth:960,margin:"0 auto",padding:"56px 16px"}}>
+            <div style={{fontSize:12,color:"var(--muted)",textAlign:"center",letterSpacing:1,marginBottom:28}}>CE QUE VOUS POUVEZ FAIRE</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:14}}>
+              {[
+                {icon:"🔍", title:"Recherche multi-cibles", desc:"Nom, email, SIREN, IP ou username — l'outil détecte automatiquement quoi interroger."},
+                {icon:"🌐", title:"Sources publiques croisées", desc:"Registres légaux, sanctions, fuites de données, certificats SSL, infrastructure réseau."},
+                {icon:"🕸", title:"Cartographie visuelle", desc:"Un graphe interactif révèle les connexions entre une cible et les entités liées."},
+                {icon:"📄", title:"Rapport exportable", desc:"Synthèse claire avec score de risque, exportable en PDF pour vos dossiers."},
+              ].map(f=>(
+                <div key={f.title} style={S.card()}>
+                  <div style={{fontSize:22,marginBottom:10}}>{f.icon}</div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:6}}>{f.title}</div>
+                  <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.6}}>{f.desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* How it works */}
+          <div style={{background:"var(--bg2)",borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)",padding:"56px 16px"}}>
+            <div style={{maxWidth:760,margin:"0 auto"}}>
+              <div style={{fontSize:12,color:"var(--muted)",textAlign:"center",letterSpacing:1,marginBottom:28}}>COMMENT ÇA MARCHE</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:24}}>
+                {[
+                  {n:"1", title:"Choisissez un mode", desc:"Investigation, particulier, entreprise ou recrutement."},
+                  {n:"2", title:"Lancez une recherche", desc:"Entrez un nom, un email, une IP — c'est tout."},
+                  {n:"3", title:"Consultez le rapport", desc:"Synthèse, graphe, sources et score de risque en un clic."},
+                ].map(s=>(
+                  <div key={s.n} style={{textAlign:"center"}}>
+                    <div style={{width:32,height:32,borderRadius:"50%",background:"var(--cyan)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:13,margin:"0 auto 12px"}}>{s.n}</div>
+                    <div style={{fontSize:13,fontWeight:700,color:"var(--text)",marginBottom:4}}>{s.title}</div>
+                    <div style={{fontSize:12,color:"var(--muted)"}}>{s.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* CTA final */}
+          <div style={{textAlign:"center",padding:"56px 16px"}}>
+            <div style={{fontSize:20,fontWeight:800,color:"var(--text)",marginBottom:10}}>Prêt à commencer ?</div>
+            <div style={{fontSize:13,color:"var(--muted)",marginBottom:22}}>4 recherches gratuites par mois, sans engagement.</div>
+            <button onClick={()=>setScreen("home")} style={{...S.btn("var(--cyan)"),padding:"12px 24px",fontSize:14}}>Commencer gratuitement →</button>
+            <div style={{fontSize:11,color:"var(--dim)",marginTop:28}}>⚖️ Sources publiques uniquement — Respectez le RGPD et la loi Informatique & Libertés.</div>
+          </div>
+        </div>
+      )}
 
       {/* HOME */}
       {screen==="home"&&(
@@ -529,9 +615,10 @@ function App() {
                 </span>
               ))}
             </div>
-            {!config.groq&&(
+            {!config.premium&&(
               <div style={{marginTop:10,fontSize:11,color:"var(--amber)"}}>
-                ⚠️ Ajoutez <code style={{background:"var(--bg)",padding:"1px 4px",borderRadius:3}}>GROQ_API_KEY</code> dans votre fichier <code style={{background:"var(--bg)",padding:"1px 4px",borderRadius:3}}>.env</code> pour activer les rapports IA.
+                ⚠️ Rapport IA, export PDF et analyse en lot sont des fonctionnalités <strong>Premium</strong> — voir l'onglet{" "}
+                <span onClick={()=>setScreen("pricing")} style={{color:"var(--cyan)",cursor:"pointer",textDecoration:"underline"}}>Formule</span>.
               </div>
             )}
           </div>
@@ -624,7 +711,10 @@ function App() {
                       <div style={{fontSize:30,marginBottom:10}}>🤖</div>
                       <div style={{color:"var(--amber)",marginBottom:6,fontSize:13,fontWeight:700}}>Rapport IA non disponible</div>
                       <div style={{color:"var(--muted)",fontSize:12,marginBottom:14}}>{report.errorMsg} — les données réelles restent disponibles ci-dessous.</div>
-                      <button onClick={()=>setReportTab("realdata")} style={S.btn(mc,true)}>🔴 Voir les données réelles</button>
+                      <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+                        <button onClick={()=>setReportTab("realdata")} style={S.btn(mc,true)}>🔴 Voir les données réelles</button>
+                        <button onClick={()=>setScreen("pricing")} style={S.btn("var(--green)")}>💳 Voir les formules</button>
+                      </div>
                     </div>
                   )}
                   {!report.error&&(<>
@@ -759,7 +849,17 @@ function App() {
               {reportTab==="graphe"&&(
                 <div>
                   <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:10}}>🕸 Cartographie des connexions</div>
-                  {graphData ? (
+                  {!config.premium ? (
+                    <div style={{textAlign:"center",padding:40,marginBottom:12,background:"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.25)",borderRadius:10}}>
+                      <div style={{fontSize:30,marginBottom:10}}>🕸</div>
+                      <div style={{color:"var(--amber)",marginBottom:6,fontSize:13,fontWeight:700}}>Graphe non disponible</div>
+                      <div style={{color:"var(--muted)",fontSize:12,marginBottom:14}}>La cartographie des connexions est une fonctionnalité Premium.</div>
+                      <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+                        <button onClick={()=>setReportTab("realdata")} style={S.btn(mc,true)}>🔴 Voir les données réelles</button>
+                        <button onClick={()=>setScreen("pricing")} style={S.btn("var(--green)")}>💳 Voir les formules</button>
+                      </div>
+                    </div>
+                  ) : graphData ? (
                     <GraphView data={graphData}/>
                   ) : apiLoading ? (
                     <div style={{textAlign:"center",padding:40,color:"var(--muted)"}}><span className="spin">⟳</span> Construction du graphe…</div>
@@ -886,6 +986,53 @@ function App() {
               );
             })
           )}
+        </div>
+      )}
+
+      {/* FORMULE */}
+      {screen==="pricing"&&(
+        <div style={{maxWidth:820,margin:"0 auto",padding:"40px 16px"}} className="fade">
+          <div style={{textAlign:"center",marginBottom:36}}>
+            <div style={{fontSize:20,fontWeight:800,color:"var(--text)",marginBottom:6}}>Nos formules</div>
+            <div style={{fontSize:13,color:"var(--muted)"}}>Commencez gratuitement, passez à Premium quand vous en avez besoin.</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+            {/* Gratuit */}
+            <div style={S.card({padding:24})}>
+              <div style={{fontSize:11,fontWeight:700,color:"var(--muted)",letterSpacing:1,marginBottom:6}}>GRATUIT</div>
+              <div style={{fontSize:30,fontWeight:800,color:"var(--text)",marginBottom:2}}>0€</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginBottom:22}}>Pour découvrir la plateforme</div>
+              {["4 recherches / mois","Données réelles (APIs publiques)","Sources & Google dorks","Username checker"].map(f=>
+                <div key={f} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"var(--text)",marginBottom:10}}>
+                  <span style={{color:"var(--green)",fontWeight:700}}>✓</span>{f}
+                </div>
+              )}
+              {["Graphe de connexions","Rapport IA","Export PDF","Accès API","Analyse en lot"].map(f=>
+                <div key={f} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"var(--dim)",marginBottom:10}}>
+                  <span>✕</span>{f}
+                </div>
+              )}
+              <button style={{...S.btn("var(--dim)",true),width:"100%",marginTop:14}} onClick={()=>setScreen("home")}>Offre actuelle</button>
+            </div>
+            {/* Premium */}
+            <div style={S.card({padding:24,border:"1px solid var(--cyan)"})}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--cyan)",letterSpacing:1}}>PREMIUM</div>
+                <span style={{fontSize:9,padding:"2px 8px",background:"rgba(59,91,253,.1)",color:"var(--cyan)",borderRadius:4,fontWeight:700}}>BIENTÔT</span>
+              </div>
+              <div style={{fontSize:30,fontWeight:800,color:"var(--text)",marginBottom:2}}>À venir</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginBottom:22}}>Pour un usage professionnel régulier</div>
+              {["Recherches illimitées","Données réelles (APIs publiques)","Graphe de connexions","Sources & Google dorks","Username checker","Rapport IA illimité","Export PDF","Accès API (programmatique)","Analyse en lot (10 cibles)"].map(f=>
+                <div key={f} style={{display:"flex",alignItems:"center",gap:8,fontSize:13,color:"var(--text)",marginBottom:10}}>
+                  <span style={{color:"var(--cyan)",fontWeight:700}}>✓</span>{f}
+                </div>
+              )}
+              <button disabled style={{...S.btn("var(--cyan)"),width:"100%",marginTop:14,opacity:.5,cursor:"not-allowed"}}>Paiement bientôt disponible</button>
+            </div>
+          </div>
+          <div style={{textAlign:"center",fontSize:11,color:"var(--dim)",marginTop:24}}>
+            Les abonnements Premium ne sont pas encore activés — cette page présente l'offre à venir.
+          </div>
         </div>
       )}
 
