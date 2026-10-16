@@ -18,6 +18,8 @@ services:
         sync: false
       - key: PAPPERS_API_KEY
         sync: false
+      - key: OPENCORPORATES_API_KEY
+        sync: false
       - key: HIBP_API_KEY
         sync: false
       - key: HUNTER_API_KEY

@@ -35,6 +35,7 @@ python main.py
 | VirusTotal | 4 req/min | https://www.virustotal.com/gui/my-apikey |
 | Shodan | Compte gratuit | https://account.shodan.io |
 | AlienVault OTX | Illimité | https://otx.alienvault.com/api |
+| OpenCorporates | Tier gratuit limité | https://api.opencorporates.com |
 
 **APIs gratuites sans clé (actives automatiquement) :**
 - 🇫🇷 Annuaire Entreprises (gouv.fr)
@@ -43,16 +44,19 @@ python main.py
 - 🔐 Certificats SSL (crt.sh)
 - 🌐 WHOIS (RDAP)
 - 📍 Géolocalisation IP (ip-api.com)
+- 🗄️ Wayback Machine (archives web)
+- 📡 GreyNoise (bruit internet / scans)
+- 🔍 Username checker (WhatsMyName, 650+ plateformes vérifiées en temps réel)
 
 > ⚠️ OpenSanctions exige désormais une clé API côté leur service (changement récent de leur part) — la source reste appelée mais remonte une erreur tant qu'aucune clé n'est configurée.
 
 ## 🚀 Fonctionnalités
 
 - **4 modes** : Investigation, Particulier, Entreprise, Recrutement
-- **Rapport IA** généré par Llama 3.3 70B (Groq, gratuit)
-- **12 APIs** interrogées en parallèle selon le type de cible
+- **Rapport IA** généré par Llama 3.3 70B (Groq, gratuit), basé sur les vraies données collectées
+- **16 APIs** interrogées en parallèle selon le type de cible, avec cache (TTL 1h)
 - **Export PDF** propre (via fpdf2)
-- **Username checker** sur 50+ plateformes (GitHub/Reddit vérifiés en temps réel)
+- **Username checker** sur 650+ plateformes (base WhatsMyName), toutes vérifiées en temps réel
 - **Analyse en lot** jusqu'à 10 cibles simultanées
 - **Historique** persistent (SQLite)
 - **Dossiers** avec timeline et notes
@@ -66,7 +70,7 @@ python main.py
 | POST | `/api/report` | Génération rapport IA |
 | POST | `/api/batch` | Analyse multi-cibles |
 | GET | `/api/analyze?q=` | Toutes les APIs en parallèle |
-| POST | `/api/username` | Username checker 50+ plateformes |
+| POST | `/api/username` | Username checker 650+ plateformes |
 | POST | `/api/export/pdf` | Export PDF |
 | GET | `/api/config` | État des APIs configurées |
 | GET | `/api/history` | Historique des recherches |

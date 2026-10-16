@@ -1,7 +1,14 @@
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 from main import app
 
 client = TestClient(app)
+
+# Liste réduite pour ne pas interroger 650+ sites réels à chaque run de test.
+_WMN_TEST_SITES = [
+    {"name": "GitHub", "uri_check": "https://api.github.com/users/{account}", "e_code": 200, "e_string": "", "m_code": 404, "m_string": ""},
+    {"name": "Reddit", "uri_check": "https://www.reddit.com/user/{account}/about.json", "e_code": 200, "e_string": "", "m_code": 404, "m_string": ""},
+]
 
 
 def test_config_shape():
@@ -80,9 +87,22 @@ def test_waitlist_duplicate_does_not_error():
     assert r.status_code == 200
 
 
-def test_username_checker_returns_all_links():
+@patch("main.get_wmn_sites", new_callable=AsyncMock)
+def test_username_checker_returns_all_links(mock_sites):
+    mock_sites.return_value = _WMN_TEST_SITES
     r = client.post("/api/username", json={"username": "octocat"})
     assert r.status_code == 200
     data = r.json()
-    assert data["total"] > 40
+    assert data["total"] == len(_WMN_TEST_SITES)
     assert "api_results" in data and "links" in data
+    assert set(data["api_results"].keys()) == {"GitHub", "Reddit"}
+
+
+@patch("main.get_wmn_sites", new_callable=AsyncMock)
+def test_username_checker_detects_known_account(mock_sites):
+    # Sanity check en conditions réelles (1 seule requête réseau) : un compte
+    # GitHub connu pour exister doit remonter "found", pas juste une structure vide.
+    mock_sites.return_value = [_WMN_TEST_SITES[0]]
+    r = client.post("/api/username", json={"username": "octocat"})
+    assert r.status_code == 200
+    assert r.json()["api_results"]["GitHub"] == "found"

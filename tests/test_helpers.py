@@ -64,3 +64,36 @@ def test_summarize_real_data_skips_error_sources():
     results = {"opensanctions": {"error": "401 Unauthorized"}}
     s = summarize_real_data("name", results)
     assert "401" not in s
+
+
+def test_summarize_real_data_crtsh_list_value_not_skipped():
+    # Régression : crt.sh/wayback renvoient une LISTE, pas un dict — un filtre
+    # `isinstance(v, dict)` mal placé les excluait silencieusement de la boucle.
+    results = {"crtsh": [{"name_value": "www.example.com\nexample.com"}]}
+    s = summarize_real_data("domain", results)
+    assert "sous-domaine" in s
+
+
+def test_summarize_real_data_wayback():
+    header = ["urlkey", "timestamp", "original", "mimetype", "statuscode", "digest", "length"]
+    results = {"wayback": [header, ["x"] * 7, ["y"] * 7]}
+    s = summarize_real_data("domain", results)
+    assert "2 capture" in s
+
+
+def test_summarize_real_data_greynoise_noise():
+    results = {"greynoise": {"ip": "1.2.3.4", "noise": True, "classification": "malicious"}}
+    s = summarize_real_data("ip", results)
+    assert "scan internet" in s and "malicious" in s
+
+
+def test_summarize_real_data_greynoise_clean_is_omitted():
+    results = {"greynoise": {"ip": "1.2.3.4", "noise": False, "riot": False}}
+    s = summarize_real_data("ip", results)
+    assert "GreyNoise" not in s
+
+
+def test_summarize_real_data_opencorporates():
+    results = {"opencorporates": {"results": {"companies": [{"company": {"name": "ACME Ltd", "jurisdiction_code": "us_de"}}]}}}
+    s = summarize_real_data("name", results)
+    assert "ACME Ltd" in s and "us_de" in s

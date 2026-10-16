@@ -38,6 +38,7 @@ ABUSEIPDB_KEY  = os.getenv("ABUSEIPDB_API_KEY", "")
 OTX_KEY        = os.getenv("OTX_API_KEY", "")
 HUNTER_KEY     = os.getenv("HUNTER_API_KEY", "")
 SHODAN_KEY     = os.getenv("SHODAN_API_KEY", "")
+OPENCORPORATES_KEY = os.getenv("OPENCORPORATES_API_KEY", "")
 DB_PATH        = os.getenv("DB_PATH", "osint.db")
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -325,6 +326,7 @@ def api_config():
         "otx":        bool(OTX_KEY),
         "hunter":     bool(HUNTER_KEY),
         "shodan":     bool(SHODAN_KEY),
+        "opencorporates": bool(OPENCORPORATES_KEY),
     }
 
 ANALYZE_CACHE_TTL = 3600  # secondes
@@ -340,6 +342,8 @@ async def run_analyze_tasks(qt: str, q: str) -> dict:
         tasks['opensanctions'] = _fetch("https://api.opensanctions.org/search/default", {"q": q, "limit": 5})
         if PAPPERS_KEY:
             tasks['pappers'] = _fetch("https://api.pappers.fr/v2/recherche", {"api_token": PAPPERS_KEY, "q": q, "nombre": 5})
+        if OPENCORPORATES_KEY:
+            tasks['opencorporates'] = _fetch("https://api.opencorporates.com/v0.4/companies/search", {"q": q, "per_page": 5, "api_token": OPENCORPORATES_KEY})
 
     if qt == 'email':
         if HIBP_KEY:
@@ -353,10 +357,12 @@ async def run_analyze_tasks(qt: str, q: str) -> dict:
             resource = f"ip_addresses/{q}" if qt == 'ip' else f"domains/{q}"
             tasks['virustotal'] = _fetch_vt(resource, VT_KEY)
         if qt == 'domain':
-            tasks['crtsh'] = _fetch("https://crt.sh/", {"q": f"%.{q}", "output": "json"})
-            tasks['rdap']  = _fetch(f"https://rdap.org/domain/{q}")
+            tasks['crtsh']   = _fetch("https://crt.sh/", {"q": f"%.{q}", "output": "json"})
+            tasks['rdap']    = _fetch(f"https://rdap.org/domain/{q}")
+            tasks['wayback'] = _fetch("http://web.archive.org/cdx/search/cdx", {"url": q, "output": "json", "limit": 10})
         if qt == 'ip':
-            tasks['ipapi'] = _fetch(f"http://ip-api.com/json/{q}")
+            tasks['ipapi']    = _fetch(f"http://ip-api.com/json/{q}")
+            tasks['greynoise'] = _fetch_greynoise(q)
             if IPINFO_KEY:
                 tasks['ipinfo'] = _fetch(f"https://ipinfo.io/{q}", {"token": IPINFO_KEY})
             if ABUSEIPDB_KEY:
@@ -392,7 +398,7 @@ def summarize_real_data(qt: str, results: dict) -> str:
     """Condense les résultats des APIs publiques en quelques lignes exploitables par le LLM."""
     lines = [f"Type de cible détecté : {qt}"]
     for key, v in results.items():
-        if not isinstance(v, dict) or v.get("error"):
+        if isinstance(v, dict) and v.get("error"):
             continue
         try:
             if key == 'annuaire' and v.get('results'):
@@ -434,6 +440,15 @@ def summarize_real_data(qt: str, results: dict) -> str:
                 lines.append(f"- Certificats SSL (crt.sh) : {len(subs)} sous-domaine(s) unique(s) détecté(s)")
             elif key == 'rdap' and v.get('ldhName'):
                 lines.append(f"- WHOIS (RDAP) : domaine {v['ldhName']} — statut {', '.join(v.get('status', []))}")
+            elif key == 'wayback' and isinstance(v, list) and len(v) > 1:
+                lines.append(f"- Wayback Machine : {len(v)-1} capture(s) archivée(s)")
+            elif key == 'greynoise':
+                if v.get('noise'):
+                    lines.append(f"- GreyNoise : IP détectée en activité de scan internet ({v.get('classification','inconnue')})")
+            elif key == 'opencorporates' and v.get('results', {}).get('companies'):
+                companies = v['results']['companies']
+                c0 = companies[0].get('company', {})
+                lines.append(f"- OpenCorporates : {len(companies)} société(s), ex. {c0.get('name')} ({c0.get('jurisdiction_code')})")
         except Exception:
             continue
     return "\n".join(lines) if len(lines) > 1 else f"Type de cible détecté : {qt}\nAucune donnée publique exploitable trouvée pour cette cible."
@@ -473,83 +488,70 @@ async def _fetch_abuse(ip: str, key: str):
         r.raise_for_status()
         return r.json()
 
+async def _fetch_greynoise(ip: str):
+    """API communautaire GreyNoise — répond en 404 (avec JSON valide) pour une IP non observée."""
+    async with httpx.AsyncClient(timeout=12) as c:
+        r = await c.get(f"https://api.greynoise.io/v3/community/{ip}")
+        if r.status_code in (200, 404):
+            return r.json()
+        r.raise_for_status()
+
 @app.get("/api/pappers/detail")
 async def pappers_detail(siren: str):
     if not PAPPERS_KEY: return {"error": "PAPPERS_API_KEY manquante"}
     return await _fetch("https://api.pappers.fr/v2/entreprise", {"api_token": PAPPERS_KEY, "siren": siren.replace(" ","")})
 
-# ── Username Checker ──────────────────────────────────────────────────────────
-PLATFORMS = [
-    {"name":"GitHub",       "url":"https://github.com/{u}",                           "api":"https://api.github.com/users/{u}"},
-    {"name":"Reddit",       "url":"https://reddit.com/user/{u}",                      "api":"https://www.reddit.com/user/{u}/about.json"},
-    {"name":"Twitter/X",    "url":"https://twitter.com/{u}"},
-    {"name":"Instagram",    "url":"https://instagram.com/{u}"},
-    {"name":"LinkedIn",     "url":"https://linkedin.com/in/{u}"},
-    {"name":"TikTok",       "url":"https://tiktok.com/@{u}"},
-    {"name":"YouTube",      "url":"https://youtube.com/@{u}"},
-    {"name":"Twitch",       "url":"https://twitch.tv/{u}"},
-    {"name":"Steam",        "url":"https://steamcommunity.com/id/{u}"},
-    {"name":"Medium",       "url":"https://medium.com/@{u}"},
-    {"name":"Tumblr",       "url":"https://{u}.tumblr.com"},
-    {"name":"Telegram",     "url":"https://t.me/{u}"},
-    {"name":"Pinterest",    "url":"https://pinterest.com/{u}"},
-    {"name":"Dribbble",     "url":"https://dribbble.com/{u}"},
-    {"name":"Behance",      "url":"https://behance.net/{u}"},
-    {"name":"Patreon",      "url":"https://patreon.com/{u}"},
-    {"name":"Substack",     "url":"https://{u}.substack.com"},
-    {"name":"Spotify",      "url":"https://open.spotify.com/user/{u}"},
-    {"name":"SoundCloud",   "url":"https://soundcloud.com/{u}"},
-    {"name":"Last.fm",      "url":"https://last.fm/user/{u}"},
-    {"name":"GitLab",       "url":"https://gitlab.com/{u}"},
-    {"name":"Stackoverflow","url":"https://stackoverflow.com/users/{u}"},
-    {"name":"Keybase",      "url":"https://keybase.io/{u}"},
-    {"name":"npm",          "url":"https://npmjs.com/~{u}"},
-    {"name":"PyPI",         "url":"https://pypi.org/user/{u}"},
-    {"name":"CodePen",      "url":"https://codepen.io/{u}"},
-    {"name":"Replit",       "url":"https://replit.com/@{u}"},
-    {"name":"Hackthebox",   "url":"https://app.hackthebox.com/profile/{u}"},
-    {"name":"TryHackMe",    "url":"https://tryhackme.com/p/{u}"},
-    {"name":"Goodreads",    "url":"https://goodreads.com/{u}"},
-    {"name":"Letterboxd",   "url":"https://letterboxd.com/{u}"},
-    {"name":"About.me",     "url":"https://about.me/{u}"},
-    {"name":"Linktree",     "url":"https://linktr.ee/{u}"},
-    {"name":"Gravatar",     "url":"https://gravatar.com/{u}"},
-    {"name":"Ko-fi",        "url":"https://ko-fi.com/{u}"},
-    {"name":"Vk",           "url":"https://vk.com/{u}"},
-    {"name":"Quora",        "url":"https://quora.com/profile/{u}"},
-    {"name":"Flickr",       "url":"https://flickr.com/people/{u}"},
-    {"name":"Vimeo",        "url":"https://vimeo.com/{u}"},
-    {"name":"Mastodon",     "url":"https://mastodon.social/@{u}"},
-    {"name":"Snapchat",     "url":"https://snapchat.com/add/{u}"},
-    {"name":"DeviantArt",   "url":"https://{u}.deviantart.com"},
-    {"name":"Product Hunt", "url":"https://producthunt.com/@{u}"},
-    {"name":"Wattpad",      "url":"https://wattpad.com/user/{u}"},
-    {"name":"Hackernews",   "url":"https://news.ycombinator.com/user?id={u}"},
-    {"name":"500px",        "url":"https://500px.com/p/{u}"},
-    {"name":"Xing",         "url":"https://xing.com/profile/{u}"},
-    {"name":"Dailymotion",  "url":"https://dailymotion.com/{u}"},
-    {"name":"Discord",      "url":"https://discord.com/users/{u}"},
-    {"name":"Patreon",      "url":"https://patreon.com/{u}"},
+# ── Username Checker (alimenté par WhatsMyName) ─────────────────────────────────
+WMN_URL  = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
+WMN_TTL  = 86400  # 24h
+_wmn_cache: dict = {"ts": 0, "sites": []}
+
+# Filet de sécurité minimal si WhatsMyName est injoignable et qu'aucun cache n'existe encore.
+WMN_FALLBACK = [
+    {"name": "GitHub", "uri_check": "https://api.github.com/users/{account}", "e_code": 200, "e_string": "", "m_code": 404, "m_string": ""},
+    {"name": "Reddit",  "uri_check": "https://www.reddit.com/user/{account}/about.json", "e_code": 200, "e_string": "", "m_code": 404, "m_string": ""},
 ]
+
+async def get_wmn_sites() -> list:
+    now = time.time()
+    if _wmn_cache["sites"] and now - _wmn_cache["ts"] < WMN_TTL:
+        return _wmn_cache["sites"]
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(WMN_URL)
+            r.raise_for_status()
+            data = r.json()
+        sites = [s for s in data.get("sites", []) if s.get("cat") != "xx NSFW xx" and s.get("uri_check")]
+        _wmn_cache["ts"] = now
+        _wmn_cache["sites"] = sites
+        return sites
+    except Exception:
+        return _wmn_cache["sites"] or WMN_FALLBACK
+
+async def _check_wmn_site(client: httpx.AsyncClient, site: dict, username: str, sem: asyncio.Semaphore):
+    url = site["uri_check"].replace("{account}", username)
+    async with sem:
+        try:
+            r = await client.get(url, timeout=4, headers={"User-Agent": "Mozilla/5.0 OSINT-Platform/2.0"})
+            e_string = site.get("e_string") or ""
+            found = r.status_code == site.get("e_code") and (not e_string or e_string in r.text)
+            return site["name"], ("found" if found else "notfound"), url
+        except Exception:
+            return site["name"], "unknown", url
 
 @app.post("/api/username")
 async def api_username(req: UsernameRequest):
     u = req.username.strip()
-    api_platforms = [p for p in PLATFORMS if "api" in p]
-    results = {}
+    sites = await get_wmn_sites()
+    sem = asyncio.Semaphore(100)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        checked = await asyncio.gather(*[_check_wmn_site(client, s, u, sem) for s in sites])
 
-    async def check(p):
-        try:
-            url = p["api"].replace("{u}", u)
-            async with httpx.AsyncClient(timeout=8, follow_redirects=True) as c:
-                r = await c.get(url, headers={"User-Agent": "Mozilla/5.0 OSINT-Platform/2.0"})
-                results[p["name"]] = "found" if r.status_code == 200 else "notfound"
-        except:
-            results[p["name"]] = "unknown"
-
-    await asyncio.gather(*[check(p) for p in api_platforms])
-    links = [{"name": p["name"], "url": p["url"].replace("{u}", u)} for p in PLATFORMS]
-    return {"api_results": results, "links": links, "total": len(links)}
+    api_results, links = {}, []
+    for name, status, url in checked:
+        api_results[name] = status
+        links.append({"name": name, "url": url})
+    return {"api_results": api_results, "links": links, "total": len(links)}
 
 # ── PDF Export (fpdf2) ────────────────────────────────────────────────────────
 @app.post("/api/export/pdf")

@@ -130,6 +130,12 @@ function buildRealGraph(query, queryType, results) {
   if (results.otx?.pulse_info?.count>0)
     add("otx", `${results.otx.pulse_info.count} pulses OTX`, "ip", "Indicateurs de menace", "⚠ threat intel");
 
+  if (results.greynoise?.noise)
+    add("greynoise", `Scan internet (${results.greynoise.classification||'inconnu'})`, "ip", "GreyNoise", "⚠ activité de scan");
+
+  (results.opencorporates?.results?.companies||[]).slice(0,5).forEach((c,i)=>
+    add(`oc_${i}`, c.company?.name, "company", c.company?.jurisdiction_code||"", "lié à (OpenCorporates)"));
+
   const matches = results.shodan?.data || results.shodan?.matches;
   (matches||[]).slice(0,5).forEach((h,i)=>
     add(`shodan_${i}`, `${h.ip_str||query}:${h.port||"?"}`, "ip", h.product||"Service exposé", "port ouvert"));
@@ -315,6 +321,21 @@ function summarizeSource(key, v) {
         const status = (v.status||[]).join(", ");
         return `Domaine enregistré${v.ldhName?` (${v.ldhName})`:''}${status?` — statut : ${status}`:''}.`;
       }
+      case 'wayback': {
+        if (!Array.isArray(v) || v.length<2) return "Aucune archive trouvée sur Wayback Machine.";
+        return `${v.length-1} capture${v.length-1>1?'s':''} archivée${v.length-1>1?'s':''} trouvée${v.length-1>1?'s':''}.`;
+      }
+      case 'greynoise': {
+        if (v.noise) return `⚠ IP détectée en activité de scan internet (classification : ${v.classification||'inconnue'}).`;
+        if (v.riot) return "IP associée à un service connu référencé (RIOT) — faible risque.";
+        return "Aucune activité de scan détectée pour cette IP (GreyNoise).";
+      }
+      case 'opencorporates': {
+        const companies = v.results?.companies || [];
+        if (!companies.length) return "Aucune société trouvée sur OpenCorporates.";
+        const c = companies[0].company || {};
+        return `${companies.length} société(s) trouvée(s) — ex : ${c.name} (${c.jurisdiction_code||'?'}).`;
+      }
       default: return "Résultat reçu.";
     }
   } catch { return "Résultat reçu."; }
@@ -346,6 +367,7 @@ function ApiResultsPanel({results, queryType, loading, premium, onUpgrade}) {
     urlscan:"🔍 URLScan.io",virustotal:"🦠 VirusTotal",ipinfo:"🌍 IPInfo",
     abuseipdb:"🛡️ AbuseIPDB",shodan:"🔭 Shodan",otx:"👾 AlienVault OTX",
     crtsh:"🔐 Certificats SSL (crt.sh)",rdap:"🌐 WHOIS (RDAP)",ipapi:"📍 Géolocalisation IP",
+    wayback:"🗄️ Wayback Machine",greynoise:"📡 GreyNoise",opencorporates:"🏛️ OpenCorporates",
   };
   const colors = {
     annuaire:"var(--cyan)",bodacc:"var(--amber)",opensanctions:"var(--red)",
@@ -353,6 +375,7 @@ function ApiResultsPanel({results, queryType, loading, premium, onUpgrade}) {
     urlscan:"var(--blue)",virustotal:"#22d3ee",ipinfo:"var(--green)",
     abuseipdb:"var(--red)",shodan:"var(--purple)",otx:"var(--pink)",
     crtsh:"var(--cyan)",rdap:"var(--blue)",ipapi:"var(--green)",
+    wayback:"var(--amber)",greynoise:"var(--red)",opencorporates:"var(--purple)",
   };
 
   return (
@@ -428,6 +451,7 @@ function App() {
   const [usernameInput, setUsernameInput] = useState("");
   const [usernameRes, setUsernameRes] = useState(null);
   const [usernameLoading, setUsernameLoading] = useState(false);
+  const [showNotFound, setShowNotFound] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [pdfLoading, setPdfLoading]   = useState(false);
   const [waitlistEmail, setWaitlistEmail] = useState("");
@@ -496,7 +520,7 @@ function App() {
   // Username
   const runUsername = async () => {
     if (!usernameInput.trim()) return;
-    setUsernameLoading(true); setUsernameRes(null);
+    setUsernameLoading(true); setUsernameRes(null); setShowNotFound(false);
     try {
       const r = await api.post("/api/username", {username: usernameInput.trim()});
       setUsernameRes(r);
@@ -1250,52 +1274,66 @@ function App() {
       {screen==="username"&&(
         <div style={{maxWidth:860,margin:"0 auto",padding:"20px 16px"}} className="fade">
           <div style={{fontSize:18,fontWeight:800,color:"var(--text)",marginBottom:4}}>🔍 Username Checker</div>
-          <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Vérifiez la présence d'un pseudonyme sur 50+ plateformes. GitHub et Reddit sont vérifiés en temps réel via leurs APIs publiques.</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Vérifie la présence d'un pseudonyme sur 650+ plateformes, toutes contrôlées en temps réel (base WhatsMyName).</div>
           <div style={{display:"flex",gap:8,marginBottom:14}}>
             <input value={usernameInput} onChange={e=>setUsernameInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&usernameInput&&runUsername()}
               placeholder="Entrez un username…" style={{...S.input,flex:1,fontSize:14}} autoFocus/>
             <button onClick={runUsername} disabled={usernameLoading||!usernameInput.trim()}
-              style={{...S.btn("var(--blue)"),opacity:usernameLoading||!usernameInput.trim()?0.5:1,minWidth:120,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
-              {usernameLoading?<><span className="spin">⟳</span> Scan…</>:"Analyser →"}
+              style={{...S.btn("var(--blue)"),opacity:usernameLoading||!usernameInput.trim()?0.5:1,minWidth:150,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
+              {usernameLoading?<><span className="spin">⟳</span> Scan de 650+ sites…</>:"Analyser →"}
             </button>
           </div>
+          {usernameLoading&&<div style={{fontSize:11,color:"var(--muted)",marginBottom:14}}>⏱ Compte environ 20 à 30 secondes — chaque plateforme est interrogée individuellement.</div>}
           {usernameRes?.error&&<div style={{color:"var(--red)",marginBottom:10,fontSize:12}}>Erreur: {usernameRes.error}</div>}
-          {usernameRes?.api_results&&(
-            <div style={{...S.card({border:"1px solid rgba(34,197,94,.3)",marginBottom:14})}}>
-              <div style={{fontSize:10,color:"var(--green)",marginBottom:8,letterSpacing:1,fontWeight:700}}>✅ VÉRIFICATION API (résultats réels)</div>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                {Object.entries(usernameRes.api_results).map(([name,status])=>(
-                  <div key={name} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:6,background:status==="found"?"rgba(34,197,94,.1)":"rgba(239,68,68,.08)",border:`1px solid ${status==="found"?"rgba(34,197,94,.3)":"rgba(239,68,68,.2)"}`}}>
-                    <span style={{width:7,height:7,borderRadius:"50%",background:status==="found"?"var(--green)":"var(--red)",display:"inline-block"}}/>
-                    <span style={{fontSize:12,color:"var(--text)"}}>{name}</span>
-                    <span style={{fontSize:10,color:status==="found"?"var(--green)":"var(--red)"}}>{status==="found"?"✓ Trouvé":"✗ Absent"}</span>
+          {usernameRes?.api_results&&(()=>{
+            const entries = Object.entries(usernameRes.api_results);
+            const found = entries.filter(([,s])=>s==="found");
+            const notfound = entries.filter(([,s])=>s==="notfound");
+            const unknown = entries.filter(([,s])=>s==="unknown");
+            const linkFor = name => usernameRes.links.find(l=>l.name===name)?.url || "#";
+            return (
+              <div>
+                <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:16,fontSize:12}}>
+                  <span style={{color:"var(--green)",fontWeight:700}}>✓ {found.length} trouvé{found.length>1?"s":""}</span>
+                  <span style={{color:"var(--muted)"}}>✗ {notfound.length} absent{notfound.length>1?"s":""}</span>
+                  {unknown.length>0&&<span style={{color:"var(--dim)"}}>? {unknown.length} indéterminé{unknown.length>1?"s":""}</span>}
+                  <span style={{color:"var(--dim)"}}>sur {entries.length} plateformes vérifiées</span>
+                </div>
+
+                {found.length>0&&(
+                  <div style={{marginBottom:18}}>
+                    <div style={{fontSize:10,color:"var(--green)",marginBottom:8,letterSpacing:1,fontWeight:700}}>✅ COMPTES TROUVÉS</div>
+                    <div className="grid-5" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
+                      {found.map(([name])=>(
+                        <a key={name} href={linkFor(name)} target="_blank"
+                          style={{background:"rgba(52,199,119,.06)",border:"1px solid rgba(52,199,119,.3)",borderRadius:7,padding:"8px 10px",textDecoration:"none",transition:"all .15s"}}
+                          onMouseEnter={e=>e.currentTarget.style.borderColor="var(--green)"}
+                          onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(52,199,119,.3)"}>
+                          <div style={{fontSize:11,fontWeight:600,color:"var(--green)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</div>
+                          <div style={{fontSize:9,color:"var(--green)"}}>✓ Trouvé</div>
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                ))}
+                )}
+
+                <button onClick={()=>setShowNotFound(o=>!o)} style={{...S.btn("var(--dim)",true),fontSize:11,marginBottom:showNotFound?10:0}}>
+                  {showNotFound?"▲ Masquer":"▼ Voir"} les {notfound.length+unknown.length} plateformes sans résultat
+                </button>
+                {showNotFound&&(
+                  <div className="grid-5" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
+                    {[...notfound,...unknown].map(([name,status])=>(
+                      <a key={name} href={linkFor(name)} target="_blank"
+                        style={{background:"var(--bg)",border:"1px solid var(--border)",borderRadius:7,padding:"8px 10px",textDecoration:"none"}}>
+                        <div style={{fontSize:11,fontWeight:600,color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</div>
+                        <div style={{fontSize:9,color:"var(--dim)"}}>{status==="unknown"?"? Indéterminé":"✗ Absent"}</div>
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-          {usernameRes?.links&&(
-            <div>
-              <div style={{fontSize:12,color:"var(--muted)",marginBottom:10}}>Liens directs — {usernameRes.total} plateformes</div>
-              <div className="grid-5" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
-                {usernameRes.links.map(p=>{
-                  const confirmed = usernameRes.api_results?.[p.name]==="found";
-                  const absent    = usernameRes.api_results?.[p.name]==="notfound";
-                  return (
-                    <a key={p.name} href={p.url} target="_blank"
-                      style={{background:"var(--bg)",border:`1px solid ${confirmed?"rgba(34,197,94,.4)":absent?"rgba(239,68,68,.2)":"var(--border)"}`,borderRadius:7,padding:"8px 10px",textDecoration:"none",transition:"all .15s"}}
-                      onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--blue)";e.currentTarget.style.background="rgba(59,130,246,.05)";}}
-                      onMouseLeave={e=>{e.currentTarget.style.borderColor=confirmed?"rgba(34,197,94,.4)":absent?"rgba(239,68,68,.2)":"var(--border)";e.currentTarget.style.background="var(--bg)";}}>
-                      <div style={{fontSize:11,fontWeight:600,color:confirmed?"var(--green)":absent?"var(--red)":"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
-                      {confirmed&&<div style={{fontSize:9,color:"var(--green)"}}>✓ Confirmé</div>}
-                      {absent&&<div style={{fontSize:9,color:"var(--red)"}}>✗ Absent</div>}
-                      {!confirmed&&!absent&&<div style={{fontSize:9,color:"var(--dim)"}}>🔗 non vérifié</div>}
-                    </a>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
