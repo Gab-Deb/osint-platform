@@ -1393,7 +1393,7 @@ function App() {
               {id:"evidence",label:"Docs & OpSec",icon:"📋",color:"#38bdf8"},
             ].map(cat=>(
               <div key={cat.id} style={{padding:"7px 10px",borderRadius:6,marginBottom:3,cursor:"pointer",fontSize:12,color:"var(--muted)",display:"flex",alignItems:"center",gap:7}}
-                onClick={()=>{}}
+                onClick={()=>document.getElementById(`fw-${cat.id}`)?.scrollIntoView({behavior:"smooth",block:"start"})}
                 onMouseEnter={e=>{e.currentTarget.style.color=cat.color;e.currentTarget.style.background=cat.color+"10";}}
                 onMouseLeave={e=>{e.currentTarget.style.color="var(--muted)";e.currentTarget.style.background="transparent";}}>
                 {cat.icon} {cat.label}
@@ -1438,6 +1438,20 @@ function App() {
                 {name:"Wayback Machine",url:"https://web.archive.org",desc:"Archives web"},
                 {name:"Archive.ph",url:"https://archive.ph",desc:"Archives récentes"},
               ]},
+              {id:"geo",label:"📍 Géolocalisation",color:"#10b981",tools:[
+                {name:"Google Earth",url:"https://earth.google.com",desc:"Imagerie satellite"},
+                {name:"Yandex Maps",url:"https://yandex.com/maps",desc:"Cartographie Russie/CEI"},
+                {name:"Mapillary",url:"https://mapillary.com",desc:"Imagerie niveau rue"},
+                {name:"Overpass Turbo",url:"https://overpass-turbo.eu",desc:"Requêtes OpenStreetMap"},
+                {name:"SunCalc",url:"https://suncalc.org",desc:"Analyse ombres/position solaire"},
+                {name:"Wikimapia",url:"https://wikimapia.org",desc:"Lieux annotés par la communauté"},
+              ]},
+              {id:"darkweb",label:"🕵️ Dark Web",color:"#a855f7",tools:[
+                {name:"Ahmia",url:"https://ahmia.fi",desc:"Moteur de recherche .onion"},
+                {name:"DarkSearch",url:"https://darksearch.io",desc:"Recherche dark web"},
+                {name:"IntelX",url:"https://intelx.io",desc:"Recherche fuites & dark web"},
+                {name:"Tor Browser",url:"https://torproject.org",desc:"Navigateur .onion"},
+              ]},
               {id:"tech",label:"🔐 Cybersécurité",color:"var(--red)",tools:[
                 {name:"VirusTotal",url:"https://virustotal.com",desc:"Réputation IP/domaine"},
                 {name:"Censys",url:"https://censys.io",desc:"Hosts & certificates"},
@@ -1456,7 +1470,7 @@ function App() {
                 {name:"TryHackMe",url:"https://tryhackme.com",desc:"Labs pratiques"},
               ]},
             ].map(cat=>(
-              <div key={cat.id} style={{marginBottom:18}}>
+              <div key={cat.id} id={`fw-${cat.id}`} style={{marginBottom:18,scrollMarginTop:16}}>
                 <div style={{fontSize:12,fontWeight:700,color:cat.color,marginBottom:8,letterSpacing:1}}>{cat.label}</div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7}}>
                   {cat.tools.map(t=>(
