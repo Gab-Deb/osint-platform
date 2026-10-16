@@ -39,9 +39,12 @@ python main.py
 **APIs gratuites sans clé (actives automatiquement) :**
 - 🇫🇷 Annuaire Entreprises (gouv.fr)
 - ⚖️ BODACC (procédures collectives)
-- 🚫 OpenSanctions (sanctions/PEP)
 - 🔍 URLScan.io
-- ☣️ ThreatFox (Abuse.ch)
+- 🔐 Certificats SSL (crt.sh)
+- 🌐 WHOIS (RDAP)
+- 📍 Géolocalisation IP (ip-api.com)
+
+> ⚠️ OpenSanctions exige désormais une clé API côté leur service (changement récent de leur part) — la source reste appelée mais remonte une erreur tant qu'aucune clé n'est configurée.
 
 ## 🚀 Fonctionnalités
 
@@ -73,17 +76,29 @@ python main.py
 | PUT | `/api/cases/{id}` | Modifier un dossier |
 | DELETE | `/api/cases/{id}` | Supprimer un dossier |
 | GET | `/api/pappers/detail?siren=` | Détail Pappers par SIREN |
+| POST | `/api/waitlist` | Inscription liste d'attente Premium |
 | GET | `/api/docs` | Swagger UI |
+
+## 🧪 Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Les tests tournent aussi automatiquement sur chaque push via GitHub Actions.
 
 ## 📁 Structure
 
 ```
 osint-platform/
 ├── main.py              ← Backend FastAPI complet
-├── requirements.txt     ← Dépendances Python
-├── .env.example         ← Template variables d'environnement
-├── .env                 ← Vos clés API (ne pas committer!)
-├── osint.db             ← Base SQLite (créée automatiquement)
+├── requirements.txt     ← Dépendances Python (production)
+├── requirements-dev.txt ← + dépendances de test (pytest)
+├── tests/                ← Suite de tests automatisés
+├── .env.txt              ← Template variables d'environnement
+├── .env                  ← Vos clés API (ne pas committer!)
+├── osint.db              ← Base SQLite (créée automatiquement)
 ├── README.md
 └── static/
     └── index.html       ← Frontend React

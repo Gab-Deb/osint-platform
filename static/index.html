@@ -24,6 +24,17 @@ a{text-decoration:none;color:inherit}
 .spin{animation:spin 1s linear infinite;display:inline-block}
 .pulse{animation:pulse 1.5s ease-in-out infinite}
 .fade{animation:fadeUp .25s ease}
+@media (max-width:720px){
+  .grid-2{grid-template-columns:1fr!important}
+  .grid-3{grid-template-columns:repeat(2,1fr)!important}
+  .grid-5{grid-template-columns:repeat(3,1fr)!important}
+  .hide-mobile{display:none!important}
+  .hero-title{font-size:28px!important}
+}
+@media (max-width:460px){
+  .grid-3,.grid-5{grid-template-columns:repeat(2,1fr)!important}
+  .nav-actions{gap:4px!important}
+}
 </style>
 </head>
 <body>
@@ -419,6 +430,8 @@ function App() {
   const [usernameLoading, setUsernameLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [pdfLoading, setPdfLoading]   = useState(false);
+  const [waitlistEmail, setWaitlistEmail] = useState("");
+  const [waitlistStatus, setWaitlistStatus] = useState(null); // null | "loading" | "done" | "error"
 
   const mc = mode?.color || "var(--cyan)";
 
@@ -489,6 +502,15 @@ function App() {
       setUsernameRes(r);
     } catch(e) { setUsernameRes({error: e.message}); }
     setUsernameLoading(false);
+  };
+
+  const joinWaitlist = async () => {
+    if (!waitlistEmail.trim()) return;
+    setWaitlistStatus("loading");
+    try {
+      await api.post("/api/waitlist", {email: waitlistEmail.trim()});
+      setWaitlistStatus("done");
+    } catch(e) { setWaitlistStatus("error"); }
   };
 
   // PDF
@@ -569,7 +591,7 @@ function App() {
           <div style={{width:28,height:28,borderRadius:7,background:`linear-gradient(135deg,${mc},var(--purple))`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🔭</div>
           <span style={{fontWeight:800,fontSize:15,color:"var(--text)",letterSpacing:-.3,fontFamily:"'Inter',sans-serif"}}>OSINT</span>
         </div>
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+        <div className="nav-actions" style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <div style={{position:"relative"}}>
             <button onClick={()=>setMenuOpen(o=>!o)} style={{...S.btn("var(--dim)",true),fontSize:11,padding:"5px 10px",display:"flex",alignItems:"center",gap:6}}>
               ☰ Menu
@@ -617,7 +639,7 @@ function App() {
               <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green)",display:"inline-block"}}/>
               Gratuit pour commencer — aucune carte bancaire requise
             </div>
-            <div style={{fontSize:38,fontWeight:800,color:"var(--text)",marginBottom:14,lineHeight:1.2,maxWidth:620,margin:"0 auto 14px"}}>
+            <div className="hero-title" style={{fontSize:38,fontWeight:800,color:"var(--text)",marginBottom:14,lineHeight:1.2,maxWidth:620,margin:"0 auto 14px"}}>
               Vérifiez qui est en face de vous, en quelques secondes
             </div>
             <div style={{fontSize:15,color:"var(--muted)",maxWidth:520,margin:"0 auto 32px",lineHeight:1.6}}>
@@ -645,6 +667,34 @@ function App() {
                   <div style={{fontSize:12,color:"var(--muted)",lineHeight:1.6}}>{f.desc}</div>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* Aperçu d'un rapport */}
+          <div style={{maxWidth:760,margin:"0 auto",padding:"0 16px 56px"}}>
+            <div style={{fontSize:12,color:"var(--muted)",textAlign:"center",letterSpacing:1,marginBottom:6}}>À QUOI RESSEMBLE UN RAPPORT</div>
+            <div style={{fontSize:13,color:"var(--muted)",textAlign:"center",marginBottom:24}}>Exemple illustratif — une vraie recherche croise ces sources en quelques secondes.</div>
+            <div style={S.card({padding:20})}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,flexWrap:"wrap",gap:8}}>
+                <div>
+                  <span style={{fontSize:10,padding:"3px 10px",background:"rgba(91,124,250,.12)",border:"1px solid rgba(91,124,250,.3)",borderRadius:5,color:"var(--cyan)",display:"inline-block",marginBottom:6}}>🏢 Entreprise</span>
+                  <div style={{fontSize:16,fontWeight:800,color:"var(--text)"}}>ACME Solutions SAS</div>
+                </div>
+                <span style={{fontSize:10,padding:"3px 8px",background:"rgba(52,199,119,.1)",color:"var(--green)",borderRadius:4,flexShrink:0}}>Exemple</span>
+              </div>
+              <div style={{background:"linear-gradient(135deg,rgba(91,124,250,.12),rgba(91,124,250,.04))",border:"1px solid rgba(91,124,250,.2)",borderRadius:8,padding:12,marginBottom:12,borderLeft:"3px solid var(--cyan)"}}>
+                <div style={{fontSize:9,color:"var(--cyan)",marginBottom:4,letterSpacing:1,fontWeight:700}}>SYNTHÈSE</div>
+                <div style={{fontSize:12,color:"var(--text)",lineHeight:1.6}}>Société active depuis 2018, aucune procédure collective recensée. Dirigeant identifié via le registre légal, aucun signalement sur les listes de sanctions.</div>
+              </div>
+              <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{background:"var(--bg)",border:"1px solid var(--border)",borderRadius:8,padding:12}}>
+                  <ScoreBar score={24}/>
+                </div>
+                <div style={{background:"var(--bg)",border:"1px solid var(--border)",borderRadius:8,padding:12}}>
+                  <div style={{fontSize:9,color:"var(--muted)",marginBottom:6,letterSpacing:1}}>SOURCES CROISÉES</div>
+                  <div style={{fontSize:12,color:"var(--text)",lineHeight:1.9}}>✓ Annuaire Entreprises<br/>✓ BODACC<br/>✓ OpenSanctions<br/>✓ Certificats SSL</div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -686,7 +736,7 @@ function App() {
             <div style={{fontSize:22,fontWeight:800,color:"var(--text)",marginBottom:6}}>Open Source Intelligence</div>
             <div style={{fontSize:13,color:"var(--muted)"}}>Choisissez un mode pour démarrer votre analyse</div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
             {MODES.map(m=>(
               <div key={m.id} onClick={()=>{setMode(m);setScreen("search");}}
                 style={{...S.card(),border:`1px solid ${m.color}33`,cursor:"pointer",transition:"all .2s"}}
@@ -818,7 +868,7 @@ function App() {
                     <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}}>{report.executive_summary}</div>
                   </div>
 
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                  <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
                     {/* Score */}
                     {report.risk&&(
                       <div style={S.card()}>
@@ -895,7 +945,7 @@ function App() {
                   {report.quick_checks&&(
                     <div style={{...S.card(),marginBottom:12}}>
                       <div style={{fontSize:10,color:"var(--pink)",marginBottom:10,letterSpacing:1,fontWeight:700}}>✅ VÉRIFICATIONS RAPIDES</div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                      <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
                         {report.quick_checks.map((c,i)=>{
                           const col=c.result==="oui"?"var(--green)":c.result==="non"?"var(--red)":"var(--amber)";
                           return (
@@ -1004,7 +1054,7 @@ function App() {
                   ].map(({cat,col,links})=>(
                     <div key={cat} style={{marginBottom:12}}>
                       <div style={{fontSize:11,color:col,fontWeight:700,marginBottom:6,letterSpacing:1}}>{cat}</div>
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+                      <div className="grid-3" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
                         {links.map(l=>(
                           <a key={l.n} href={l.url} target="_blank"
                             style={{background:"var(--bg)",border:`1px solid ${col}22`,borderRadius:7,padding:"8px 10px",textDecoration:"none",fontSize:11,color:col,display:"flex",alignItems:"center",gap:5,transition:"all .15s"}}
@@ -1090,7 +1140,7 @@ function App() {
             <div style={{fontSize:20,fontWeight:800,color:"var(--text)",marginBottom:6}}>Nos formules</div>
             <div style={{fontSize:13,color:"var(--muted)"}}>Commencez gratuitement, passez à Premium quand vous en avez besoin.</div>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+          <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
             {/* Gratuit */}
             <div style={S.card({padding:24})}>
               <div style={{fontSize:11,fontWeight:700,color:"var(--muted)",letterSpacing:1,marginBottom:6}}>GRATUIT</div>
@@ -1121,7 +1171,22 @@ function App() {
                   <span style={{color:"var(--cyan)",fontWeight:700}}>✓</span>{f}
                 </div>
               )}
-              <button disabled style={{...S.btn("var(--cyan)"),width:"100%",marginTop:14,opacity:.5,cursor:"not-allowed"}}>Paiement bientôt disponible</button>
+              {waitlistStatus==="done" ? (
+                <div style={{textAlign:"center",padding:"10px 0",color:"var(--green)",fontSize:12,fontWeight:600}}>✓ Merci ! On te prévient dès que c'est disponible.</div>
+              ) : (
+                <div style={{marginTop:14}}>
+                  <div style={{display:"flex",gap:6}}>
+                    <input value={waitlistEmail} onChange={e=>setWaitlistEmail(e.target.value)}
+                      onKeyDown={e=>e.key==="Enter"&&joinWaitlist()}
+                      placeholder="ton@email.com" style={{...S.input,flex:1,fontSize:12}}/>
+                    <button onClick={joinWaitlist} disabled={waitlistStatus==="loading"||!waitlistEmail.trim()}
+                      style={{...S.btn("var(--cyan)"),opacity:waitlistStatus==="loading"||!waitlistEmail.trim()?0.5:1,whiteSpace:"nowrap"}}>
+                      {waitlistStatus==="loading"?"…":"Me prévenir"}
+                    </button>
+                  </div>
+                  {waitlistStatus==="error"&&<div style={{fontSize:11,color:"var(--red)",marginTop:6}}>Une erreur est survenue, réessaie.</div>}
+                </div>
+              )}
             </div>
           </div>
           <div style={{textAlign:"center",fontSize:11,color:"var(--dim)",marginTop:24}}>
@@ -1135,7 +1200,7 @@ function App() {
         <div style={{maxWidth:820,margin:"0 auto",padding:"20px 16px"}} className="fade">
           <div style={{fontSize:18,fontWeight:800,color:"var(--text)",marginBottom:4}}>📦 Analyse en lot</div>
           <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Analysez jusqu'à 10 cibles en parallèle. Une par ligne.</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:14}}>
+          <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:14}}>
             <div style={S.card()}>
               <div style={{fontSize:10,color:"var(--muted)",marginBottom:6,letterSpacing:1}}>CIBLES (une par ligne)</div>
               <textarea value={batchTargets} onChange={e=>setBatchTargets(e.target.value)} rows={8}
@@ -1212,7 +1277,7 @@ function App() {
           {usernameRes?.links&&(
             <div>
               <div style={{fontSize:12,color:"var(--muted)",marginBottom:10}}>Liens directs — {usernameRes.total} plateformes</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
+              <div className="grid-5" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
                 {usernameRes.links.map(p=>{
                   const confirmed = usernameRes.api_results?.[p.name]==="found";
                   const absent    = usernameRes.api_results?.[p.name]==="notfound";
@@ -1224,6 +1289,7 @@ function App() {
                       <div style={{fontSize:11,fontWeight:600,color:confirmed?"var(--green)":absent?"var(--red)":"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
                       {confirmed&&<div style={{fontSize:9,color:"var(--green)"}}>✓ Confirmé</div>}
                       {absent&&<div style={{fontSize:9,color:"var(--red)"}}>✗ Absent</div>}
+                      {!confirmed&&!absent&&<div style={{fontSize:9,color:"var(--dim)"}}>🔗 non vérifié</div>}
                     </a>
                   );
                 })}
@@ -1276,7 +1342,7 @@ function App() {
                       <button onClick={()=>deleteCase(c.id)} style={S.btn("var(--red)",true)}>🗑</button>
                     </div>
                   </div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  <div className="grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
                     <div style={S.card()}>
                       <div style={{fontSize:10,color:"var(--amber)",marginBottom:10,letterSpacing:1,fontWeight:700}}>⏱ TIMELINE</div>
                       <div style={{position:"relative",paddingLeft:18}}>

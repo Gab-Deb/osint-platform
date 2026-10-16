@@ -18,6 +18,8 @@ import re
 import asyncio
 import base64
 import secrets
+import time
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -65,6 +67,30 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(BasicAuthMiddleware)
 
+# ── Rate limiting ────────────────────────────────────────────────────────────
+RATE_LIMIT   = 60   # requêtes
+RATE_WINDOW  = 60   # secondes
+_rate_buckets: dict = defaultdict(deque)
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Limite chaque IP à RATE_LIMIT requêtes /api/* par fenêtre de RATE_WINDOW secondes."""
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/api/"):
+            ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            bucket = _rate_buckets[ip]
+            while bucket and now - bucket[0] > RATE_WINDOW:
+                bucket.popleft()
+            if len(bucket) >= RATE_LIMIT:
+                return Response(
+                    content='{"detail":"Trop de requêtes — réessayez dans une minute."}',
+                    status_code=429, media_type="application/json",
+                )
+            bucket.append(now)
+        return await call_next(request)
+
+app.add_middleware(RateLimitMiddleware)
+
 # ── Database ──────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -92,6 +118,11 @@ def init_db():
             mode_icon  TEXT,
             risk       INTEGER DEFAULT 0,
             summary    TEXT,
+            created_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS waitlist (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT NOT NULL UNIQUE,
             created_at TEXT
         );
     """)
@@ -127,6 +158,9 @@ class PDFRequest(BaseModel):
     report:     dict
     mode_label: Optional[str] = "Investigation"
 
+class WaitlistRequest(BaseModel):
+    email: str
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def detect_query_type(q: str) -> str:
     s = q.strip()
@@ -157,14 +191,22 @@ def pdf_safe(text: str) -> str:
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 # ── AI Prompts ────────────────────────────────────────────────────────────────
-def build_prompt(mode: str, query: str, ctx: str = "") -> str:
+def build_prompt(mode: str, query: str, ctx: str = "", real_data: str = "") -> str:
     q  = query.replace('"', '\\"')
     qe = q.replace(' ', '%20')
     base = f'Cible: "{q}"' + (f', contexte: "{ctx}"' if ctx else "")
+    if real_data:
+        base += (
+            f'\n\nDONNÉES RÉELLES COLLECTÉES (sources publiques interrogées automatiquement) :\n{real_data}\n\n'
+            "Base ton analyse UNIQUEMENT sur ces données réelles quand elles sont disponibles. "
+            "N'invente aucun fait, SIREN, société ou fuite de données qui n'est pas listé ci-dessus. "
+            "Si les données réelles ne contiennent rien d'exploitable pour un champ, dis-le explicitement "
+            "('aucune donnée publique trouvée') plutôt que d'inventer un exemple."
+        )
     rule = (
         "RÈGLES ABSOLUES: Tu es expert OSINT senior. "
         "JSON valide UNIQUEMENT — aucun texte avant/après, aucun bloc markdown. "
-        "Zéro disclaimer sur internet. Signaux réalistes et actionnables."
+        "Zéro disclaimer sur internet. Signaux réalistes et actionnables, fondés sur les données réelles fournies."
     )
     graph = (
         f'"graph":{{"nodes":['
@@ -197,7 +239,7 @@ def build_prompt(mode: str, query: str, ctx: str = "") -> str:
         return f"""{rule} {base}. Retourne ce JSON:
 {{"target":"{q}","type":"person","executive_summary":"synthèse RH 2-3 phrases","identity":{{"full_name":"{q}","aliases":[],"locations":["France"],"summary":"synthèse identité"}},"professional":{{"linkedin_url":"https://linkedin.com/search/results/people/?keywords={qe}","career_signals":["Parcours à vérifier LinkedIn","Compétences à recouper"],"education_signals":["Diplômes à vérifier"],"summary":"synthèse profil professionnel"}},"legal_records":{{"pappers_url":"https://pappers.fr/recherche?q={qe}","companies":[],"judicial_signals":[],"summary":"Aucun antécédent dans les sources publiques"}},"checklist":[{{"item":"Identité vérifiée","done":false}},{{"item":"Pappers vérifié","done":false}},{{"item":"LinkedIn cohérent","done":false}},{{"item":"Diplômes vérifiés","done":false}},{{"item":"Casier judiciaire (B3)","done":false}},{{"item":"Références contactées","done":false}}],"google_dorks":[{{"query":"\\"{q}\\" site:linkedin.com","url":"https://google.com/search?q=%22{qe}%22+site%3Alinkedin.com","purpose":"Profil LinkedIn"}},{{"query":"\\"{q}\\" diplôme OR certification","url":"https://google.com/search?q=%22{qe}%22+dipl%C3%B4me","purpose":"Diplômes"}},{{"query":"\\"{q}\\" tribunal OR fraude","url":"https://google.com/search?q=%22{qe}%22+tribunal","purpose":"Antécédents"}}],"risk":{{"score":15,"level":"low","flags":[],"positive":["Profil à confirmer"],"summary":"synthèse risque candidat"}},{graph},"conclusion":"conclusion RH 2 phrases"}}"""
 
-    return build_prompt("investigation", query, ctx)
+    return build_prompt("investigation", query, ctx, real_data)
 
 # ── AI Report ─────────────────────────────────────────────────────────────────
 async def ai_generate(query: str, mode: str, ctx: str = "") -> dict:
@@ -205,7 +247,9 @@ async def ai_generate(query: str, mode: str, ctx: str = "") -> dict:
         raise HTTPException(402, detail="Le rapport IA est une fonctionnalité Premium.")
     if not GROQ_KEY:
         raise HTTPException(400, detail="GROQ_API_KEY manquante dans .env")
-    prompt = build_prompt(mode, query, ctx)
+    qt, real_results = await gather_real_data(query)
+    real_data = summarize_real_data(qt, real_results)
+    prompt = build_prompt(mode, query, ctx, real_data)
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -283,10 +327,11 @@ def api_config():
         "shodan":     bool(SHODAN_KEY),
     }
 
-@app.get("/api/analyze")
-async def api_analyze_all(q: str):
-    """Lance toutes les APIs pertinentes selon le type de cible."""
-    qt = detect_query_type(q)
+ANALYZE_CACHE_TTL = 3600  # secondes
+_analyze_cache: dict = {}
+
+async def run_analyze_tasks(qt: str, q: str) -> dict:
+    """Interroge toutes les APIs publiques pertinentes selon le type de cible."""
     tasks: dict = {}
 
     if qt in ('name', 'siren', 'domain'):
@@ -329,6 +374,74 @@ async def api_analyze_all(q: str):
         try:    results[name] = await coro
         except Exception as e: results[name] = {"error": str(e)}
     await asyncio.gather(*[run(n, c) for n, c in tasks.items()])
+    return results
+
+async def gather_real_data(q: str) -> tuple:
+    """Version mise en cache (TTL) de la collecte multi-APIs, partagée par /api/analyze et le rapport IA."""
+    key = q.strip().lower()
+    now = time.time()
+    cached = _analyze_cache.get(key)
+    if cached and now - cached[0] < ANALYZE_CACHE_TTL:
+        return cached[1], cached[2]
+    qt = detect_query_type(q)
+    results = await run_analyze_tasks(qt, q)
+    _analyze_cache[key] = (now, qt, results)
+    return qt, results
+
+def summarize_real_data(qt: str, results: dict) -> str:
+    """Condense les résultats des APIs publiques en quelques lignes exploitables par le LLM."""
+    lines = [f"Type de cible détecté : {qt}"]
+    for key, v in results.items():
+        if not isinstance(v, dict) or v.get("error"):
+            continue
+        try:
+            if key == 'annuaire' and v.get('results'):
+                r = v['results'][0]
+                lines.append(f"- Annuaire Entreprises : {len(v['results'])} résultat(s), ex. {r.get('nom_complet') or r.get('nom_raison_sociale')} (SIREN {r.get('siren')})")
+            elif key == 'pappers' and v.get('resultats'):
+                r = v['resultats'][0]
+                lines.append(f"- Pappers : {len(v['resultats'])} résultat(s), ex. {r.get('nom_entreprise') or r.get('denomination')} (SIREN {r.get('siren')})")
+            elif key == 'bodacc' and v.get('results'):
+                r = v['results'][0]
+                lines.append(f"- BODACC : {len(v['results'])} annonce(s), ex. {r.get('commercant')} ({r.get('familleavis_lib')}, {r.get('dateparution')})")
+            elif key == 'opensanctions' and v.get('results'):
+                lines.append(f"- OpenSanctions : {len(v['results'])} correspondance(s) potentielle(s) sur listes de sanctions/PEP")
+            elif key == 'hibp':
+                if v.get('clean'):
+                    lines.append("- Have I Been Pwned : aucune fuite de données connue")
+                else:
+                    noms = ", ".join(b.get('Title') or b.get('Name','') for b in v.get('breaches', [])[:5])
+                    lines.append(f"- Have I Been Pwned : {len(v.get('breaches',[]))} fuite(s) de données ({noms})")
+            elif key == 'urlscan' and v.get('results'):
+                lines.append(f"- URLScan.io : {v.get('total', len(v['results']))} scan(s) référencé(s)")
+            elif key == 'virustotal' and v.get('data', {}).get('attributes', {}).get('last_analysis_stats'):
+                stats = v['data']['attributes']['last_analysis_stats']
+                bad = (stats.get('malicious',0) + stats.get('suspicious',0))
+                lines.append(f"- VirusTotal : {bad} moteur(s) signalent cette cible comme malveillante/suspecte" if bad else "- VirusTotal : aucune détection malveillante")
+            elif key == 'ipapi' and v.get('status') == 'success':
+                lines.append(f"- Géolocalisation IP : {v.get('city')}, {v.get('country')} — {v.get('isp') or v.get('org')}")
+            elif key == 'abuseipdb' and v.get('data'):
+                score = v['data'].get('abuseConfidenceScore', 0)
+                lines.append(f"- AbuseIPDB : score d'abus {score}%" if score else "- AbuseIPDB : aucun signalement")
+            elif key == 'shodan':
+                matches = v.get('data') or v.get('matches') or []
+                if matches:
+                    lines.append(f"- Shodan : {len(matches)} service(s) exposé(s)")
+            elif key == 'otx' and v.get('pulse_info', {}).get('count'):
+                lines.append(f"- AlienVault OTX : référencé dans {v['pulse_info']['count']} pulse(s) de threat intelligence")
+            elif key == 'crtsh' and isinstance(v, list) and v:
+                subs = {n.strip() for c in v for n in (c.get('name_value') or '').split('\n')}
+                lines.append(f"- Certificats SSL (crt.sh) : {len(subs)} sous-domaine(s) unique(s) détecté(s)")
+            elif key == 'rdap' and v.get('ldhName'):
+                lines.append(f"- WHOIS (RDAP) : domaine {v['ldhName']} — statut {', '.join(v.get('status', []))}")
+        except Exception:
+            continue
+    return "\n".join(lines) if len(lines) > 1 else f"Type de cible détecté : {qt}\nAucune donnée publique exploitable trouvée pour cette cible."
+
+@app.get("/api/analyze")
+async def api_analyze_all(q: str):
+    """Lance toutes les APIs pertinentes selon le type de cible (mis en cache 1h)."""
+    qt, results = await gather_real_data(q)
     return {"query_type": qt, "results": results}
 
 # helpers bas niveau
@@ -459,14 +572,14 @@ async def export_pdf(req: PDFRequest):
     pdf.add_page()
 
     # Header band
-    pdf.set_fill_color(10, 14, 24)
+    pdf.set_fill_color(11, 12, 15)
     pdf.rect(0, 0, 210, 28, "F")
     pdf.set_font("Helvetica", "B", 15)
-    pdf.set_text_color(6, 214, 160)
+    pdf.set_text_color(91, 124, 250)
     pdf.cell(0, 10, "OSINT PLATFORM", ln=False, align="C")
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 8)
-    pdf.set_text_color(100, 116, 139)
+    pdf.set_text_color(139, 141, 150)
     ts = datetime.now().strftime("%d/%m/%Y %H:%M")
     pdf.cell(0, 6, pdf_safe(f"Rapport {mode_label}  |  Confidentiel  |  {ts}"), ln=True, align="C")
     pdf.ln(8)
@@ -627,6 +740,27 @@ def clear_history():
     conn = get_db()
     conn.execute("DELETE FROM history")
     conn.commit(); conn.close()
+    return {"ok": True}
+
+# ── Waitlist Premium ─────────────────────────────────────────────────────────
+EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+
+@app.post("/api/waitlist")
+def join_waitlist(req: WaitlistRequest):
+    email = req.email.strip().lower()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, detail="Adresse email invalide.")
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO waitlist (email, created_at) VALUES (?, ?)",
+            (email, datetime.now().isoformat())
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass  # déjà inscrit — pas une erreur du point de vue utilisateur
+    finally:
+        conn.close()
     return {"ok": True}
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
