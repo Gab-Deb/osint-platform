@@ -230,7 +230,94 @@ function Dork({d}) {
 }
 
 /* ══ API Results panel ════════════════════════════════════════════════════════ */
-function ApiResultsPanel({results, queryType, loading}) {
+/* ══ Synthèse lisible par source ══════════════════════════════════════════════ */
+function summarizeSource(key, v) {
+  try {
+    switch (key) {
+      case 'annuaire': {
+        const r = v.results || [];
+        if (!r.length) return "Aucune entreprise trouvée dans l'Annuaire des Entreprises.";
+        const f = r[0];
+        return `${r.length} entreprise${r.length>1?'s':''} trouvée${r.length>1?'s':''} — ex : ${f.nom_complet||f.nom_raison_sociale} (SIREN ${f.siren}, ${f.siege?.libelle_commune||'?'}).`;
+      }
+      case 'pappers': {
+        const r = v.resultats || [];
+        if (!r.length) return "Aucune entreprise trouvée sur Pappers.";
+        const f = r[0];
+        return `${r.length} résultat${r.length>1?'s':''} — ex : ${f.nom_entreprise||f.denomination} (SIREN ${f.siren}).`;
+      }
+      case 'bodacc': {
+        const r = v.results || [];
+        if (!r.length) return "Aucune annonce BODACC — pas de procédure collective récente.";
+        let nature = "procédure collective";
+        try { nature = JSON.parse(r[0].jugement||"{}").nature || nature; } catch {}
+        return `${r.length} annonce${r.length>1?'s':''} — ex : ${r[0].commercant} (${nature}, ${r[0].dateparution}).`;
+      }
+      case 'opensanctions': {
+        const r = v.results || [];
+        return r.length ? `⚠ ${r.length} correspondance${r.length>1?'s':''} potentielle${r.length>1?'s':''} sur des listes de sanctions/PEP — à vérifier.` : "Aucune correspondance sur les listes de sanctions/PEP.";
+      }
+      case 'hibp': {
+        if (v.clean) return "Aucune fuite de données connue pour cet email.";
+        const n = (v.breaches||[]).length;
+        return `⚠ ${n} fuite${n>1?'s':''} de données trouvée${n>1?'s':''}${n?` — ex : ${v.breaches[0].Title||v.breaches[0].Name}`:''}.`;
+      }
+      case 'hunter': {
+        const d = v.data || v;
+        return `Email : ${d?.status||'statut inconnu'}${d?.score!=null?` (confiance ${d.score}/100)`:''}.`;
+      }
+      case 'urlscan': {
+        const r = v.results || [];
+        if (!r.length) return "Aucun scan trouvé sur URLScan.io.";
+        const total = v.total || r.length;
+        return `${total} scan${total>1?'s':''} référencé${total>1?'s':''} — ex : ${r[0].page?.domain||r[0].task?.domain||''}.`;
+      }
+      case 'virustotal': {
+        const stats = v.data?.attributes?.last_analysis_stats;
+        if (!stats) return "Pas de données VirusTotal exploitables.";
+        const bad = (stats.malicious||0)+(stats.suspicious||0);
+        return bad>0 ? `⚠ ${bad} moteur(s) antivirus signalent cette cible.` : "Aucune détection malveillante sur VirusTotal.";
+      }
+      case 'ipinfo': return `${v.city||'?'}, ${v.country||'?'} — ${v.org||'fournisseur inconnu'}.`;
+      case 'ipapi': return v.status==='success' ? `${v.city||'?'}, ${v.country||'?'} — ${v.isp||v.org||'fournisseur inconnu'}.` : "Géolocalisation indisponible.";
+      case 'abuseipdb': {
+        const d = v.data;
+        if (!d) return "Pas de données AbuseIPDB.";
+        return d.abuseConfidenceScore>0 ? `⚠ Score d'abus : ${d.abuseConfidenceScore}% (${d.totalReports||0} signalement(s)).` : "Aucun signalement d'abus sur cette IP.";
+      }
+      case 'shodan': {
+        const m = v.data || v.matches || [];
+        if (!m.length) return "Aucun service exposé détecté par Shodan.";
+        return `${m.length} service${m.length>1?'s':''} exposé${m.length>1?'s':''} — ex : port ${m[0].port}${m[0].product?`, ${m[0].product}`:''}.`;
+      }
+      case 'otx': {
+        const n = v.pulse_info?.count || 0;
+        return n>0 ? `⚠ Référencé dans ${n} pulse(s) de threat intelligence.` : "Aucun indicateur de menace référencé.";
+      }
+      case 'crtsh': {
+        if (!Array.isArray(v) || !v.length) return "Aucun certificat SSL trouvé.";
+        const subs = new Set();
+        v.forEach(c=>(c.name_value||"").split("\n").forEach(n=>subs.add(n.trim())));
+        return `${subs.size} sous-domaine${subs.size>1?'s':''} unique${subs.size>1?'s':''} détecté${subs.size>1?'s':''} via les certificats SSL.`;
+      }
+      case 'rdap': {
+        const status = (v.status||[]).join(", ");
+        return `Domaine enregistré${v.ldhName?` (${v.ldhName})`:''}${status?` — statut : ${status}`:''}.`;
+      }
+      default: return "Résultat reçu.";
+    }
+  } catch { return "Résultat reçu."; }
+}
+
+function friendlyError(err) {
+  const s = String(err||"");
+  if (s.includes("401")) return "Ce service nécessite une clé API non configurée pour l'instant.";
+  if (s.includes("429")) return "Limite de requêtes atteinte pour ce service — réessayez plus tard.";
+  if (/timeout/i.test(s)) return "Ce service n'a pas répondu à temps.";
+  return "Ce service est temporairement indisponible.";
+}
+
+function ApiResultsPanel({results, queryType, loading, premium, onUpgrade}) {
   const [open, setOpen] = useState({});
   const toggle = k => setOpen(p=>({...p,[k]:!p[k]}));
 
@@ -270,22 +357,29 @@ function ApiResultsPanel({results, queryType, loading}) {
         const isOpen = open[k];
         return (
           <div key={k} style={{background:"var(--bg)",border:`1px solid ${col}22`,borderRadius:8,marginBottom:7,overflow:"hidden"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer"}}
-              onClick={()=>toggle(k)}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px 6px"}}>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <span style={{fontSize:14}}>{labels[k]||k}</span>
                 {hasError && <span style={{fontSize:9,color:"var(--red)",padding:"1px 5px",background:"rgba(239,68,68,.1)",borderRadius:3}}>Erreur</span>}
               </div>
-              <span style={{fontSize:11,color:"var(--muted)"}}>{isOpen?"▲":"▼"}</span>
+              <span onClick={()=>toggle(k)} style={{fontSize:11,color:"var(--muted)",cursor:"pointer",userSelect:"none"}}>{isOpen?"▲ masquer le détail":"▼ voir le détail"}</span>
+            </div>
+            <div style={{padding:"0 14px 12px",fontSize:12,color:hasError?"var(--muted)":"var(--text)",lineHeight:1.6}}>
+              {hasError ? friendlyError(v.error) : summarizeSource(k, v)}
             </div>
             {isOpen && (
               <div style={{padding:"0 14px 14px"}}>
                 {hasError ? (
-                  <div style={{fontSize:11,color:"var(--red)"}}>{v.error}</div>
-                ) : (
+                  <div style={{fontSize:10,color:"var(--dim)",fontFamily:"'IBM Plex Mono',monospace"}}>{v.error}</div>
+                ) : premium ? (
                   <pre style={{fontSize:10,color:"var(--muted)",overflow:"auto",maxHeight:240,background:"var(--bg2)",padding:10,borderRadius:6,whiteSpace:"pre-wrap",wordBreak:"break-all"}}>
                     {JSON.stringify(v, null, 2).slice(0, 2000)}{JSON.stringify(v).length>2000?"…":""}
                   </pre>
+                ) : (
+                  <div style={{textAlign:"center",padding:16,background:"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.25)",borderRadius:8}}>
+                    <div style={{fontSize:11,color:"var(--amber)",marginBottom:8}}>🔒 Données brutes complètes — fonctionnalité Premium</div>
+                    <button onClick={onUpgrade} style={S.btn("var(--green)")}>💳 Voir les formules</button>
+                  </div>
                 )}
               </div>
             )}
@@ -840,7 +934,7 @@ function App() {
               {reportTab==="realdata"&&(
                 <div>
                   <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:12}}>🔴 Données en temps réel</div>
-                  <ApiResultsPanel results={apiResults} queryType={apiQType} loading={apiLoading}/>
+                  <ApiResultsPanel results={apiResults} queryType={apiQType} loading={apiLoading} premium={config.premium} onUpgrade={()=>setScreen("pricing")}/>
                   {!apiLoading&&!apiResults&&<div style={{textAlign:"center",padding:30,color:"var(--muted)",fontSize:12}}>Aucun résultat API — vérifiez vos clés dans .env</div>}
                 </div>
               )}

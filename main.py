@@ -36,7 +36,7 @@ ABUSEIPDB_KEY  = os.getenv("ABUSEIPDB_API_KEY", "")
 OTX_KEY        = os.getenv("OTX_API_KEY", "")
 HUNTER_KEY     = os.getenv("HUNTER_API_KEY", "")
 SHODAN_KEY     = os.getenv("SHODAN_API_KEY", "")
-DB_PATH        = "osint.db"
+DB_PATH        = os.getenv("DB_PATH", "osint.db")
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="OSINT Platform", version="2.0.0", docs_url="/api/docs")
