@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: osint-platform
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENV
+        value: production
+      - key: APP_PASSWORD
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: PAPPERS_API_KEY
+        sync: false
+      - key: HIBP_API_KEY
+        sync: false
+      - key: HUNTER_API_KEY
+        sync: false
+      - key: IPINFO_TOKEN
+        sync: false
+      - key: ABUSEIPDB_API_KEY
+        sync: false
+      - key: SHODAN_API_KEY
+        sync: false
+      - key: VIRUSTOTAL_API_KEY
+        sync: false
+      - key: OTX_API_KEY
+        sync: false

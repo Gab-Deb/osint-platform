@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSINT Platform v2</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+:root{--bg:#07090f;--bg2:#0d1017;--bg3:#141920;--border:#1e2530;--text:#e2e8f0;--muted:#64748b;--dim:#334155;--cyan:#06d6a0;--blue:#3b82f6;--purple:#8b5cf6;--pink:#ec4899;--amber:#f59e0b;--red:#ef4444;--green:#22c55e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;overflow-x:hidden;height:100vh;display:flex;flex-direction:column}
+#root{flex:1;display:flex;flex-direction:column;overflow:hidden}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+input::placeholder,textarea::placeholder{color:var(--dim)}
+select option{background:var(--bg2)}
+a{text-decoration:none;color:inherit}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.spin{animation:spin 1s linear infinite;display:inline-block}
+.pulse{animation:pulse 1.5s ease-in-out infinite}
+.fade{animation:fadeUp .25s ease}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ══ API helpers ══════════════════════════════════════════════════════════════ */
+const api = {
+  post: async (url, body) => {
+    const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || r.statusText); }
+    return r.json();
+  },
+  get: async (url) => {
+    const r = await fetch(url);
+    if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail || r.statusText); }
+    return r.json();
+  },
+};
+
+/* ══ NODE TYPES for graph ═══════════════════════════════════════════════════ */
+const NODE_TYPES = {
+  person:   {color:"#06d6a0", icon:"👤"},
+  company:  {color:"#8b5cf6", icon:"🏢"},
+  email:    {color:"#ec4899", icon:"📧"},
+  social:   {color:"#f59e0b", icon:"🌐"},
+  location: {color:"#22c55e", icon:"📍"},
+  ip:       {color:"#ef4444", icon:"🖥️"},
+  username: {color:"#3b82f6", icon:"🔑"},
+  alias:    {color:"#a855f7", icon:"🎭"},
+  domain:   {color:"#22d3ee", icon:"🌍"},
+};
+
+/* ══ Construit un graphe à partir des vraies données /api/analyze ═══════════ */
+function buildRealGraph(query, queryType, results) {
+  if (!results || !Object.keys(results).length) return null;
+  const rootType = queryType==="email"?"email":queryType==="ip"?"ip":queryType==="domain"?"domain":"person";
+  const nodes = [{id:"root", label:query, type:rootType, detail:"Cible analysée"}];
+  const edges = [];
+  const seen = new Set(["root"]);
+  const add = (id, label, type, detail, edgeLabel) => {
+    if (!label || seen.has(id)) return;
+    seen.add(id);
+    nodes.push({id, label:String(label).slice(0,40), type, detail});
+    edges.push({source:"root", target:id, label:edgeLabel});
+  };
+
+  (results.annuaire?.results||[]).slice(0,5).forEach((e,i)=>
+    add(`ent_${e.siren||i}`, e.nom_complet||e.nom_raison_sociale, "company", e.siege?.libelle_commune||"", "lié à"));
+
+  (results.pappers?.resultats||[]).slice(0,5).forEach((e,i)=>
+    add(`pap_${e.siren||i}`, e.nom_entreprise||e.denomination, "company", e.siege?.ville||"", "lié à"));
+
+  (results.bodacc?.results||[]).slice(0,5).forEach((a,i)=>{
+    let nature = "Procédure collective";
+    try { nature = JSON.parse(a.jugement||"{}").nature || nature; } catch {}
+    add(`bodacc_${a.id||i}`, a.commercant, "company", nature, "⚠ procédure collective");
+  });
+
+  (results.opensanctions?.results||[]).slice(0,5).forEach((r,i)=>
+    add(`sanc_${r.id||i}`, r.caption||r.properties?.name?.[0], "alias", "Liste de sanctions / PEP", "⚠ sanction/PEP"));
+
+  if (results.hibp && !results.hibp.clean) {
+    (results.hibp.breaches||[]).slice(0,8).forEach((b,i)=>
+      add(`breach_${b.Name||i}`, b.Title||b.Name, "alias", b.BreachDate?`Fuite de données (${b.BreachDate})`:"Fuite de données", "🚨 fuite de données"));
+  }
+
+  (results.urlscan?.results||[]).slice(0,5).forEach((u,i)=>
+    add(`scan_${u.task?.uuid||i}`, u.page?.domain||u.task?.domain, "domain", u.page?.country||"", "activité observée"));
+
+  // crt.sh : sous-domaines vus dans des certificats SSL
+  if (Array.isArray(results.crtsh)) {
+    const subs = new Set();
+    results.crtsh.forEach(c=>(c.name_value||"").split("\n").forEach(n=>subs.add(n.trim())));
+    [...subs].filter(s=>s && s!==query).slice(0,8).forEach((s,i)=>
+      add(`crt_${i}`, s, "domain", "Sous-domaine (crt.sh)", "sous-domaine"));
+  }
+
+  // RDAP : organisation enregistrante
+  const rdapEntity = results.rdap?.entities?.find(e=>e.roles?.includes("registrant"))
+                   || results.rdap?.entities?.find(e=>e.vcardArray);
+  const rdapName = rdapEntity?.vcardArray?.[1]?.find(v=>v[0]==="fn")?.[3];
+  if (rdapName) add("rdap_org", rdapName, "company", "Titulaire du nom de domaine (RDAP)", "enregistré par");
+
+  const stats = results.virustotal?.data?.attributes?.last_analysis_stats;
+  if (stats && (stats.malicious>0 || stats.suspicious>0))
+    add("vt", `${stats.malicious||0} détections malveillantes`, "ip", "VirusTotal", "⚠ détection malware");
+
+  if (results.abuseipdb?.data?.abuseConfidenceScore>0)
+    add("abuseipdb", `Score abus : ${results.abuseipdb.data.abuseConfidenceScore}%`, "ip", results.abuseipdb.data.countryName||"", "⚠ signalements abus");
+
+  if (results.otx?.pulse_info?.count>0)
+    add("otx", `${results.otx.pulse_info.count} pulses OTX`, "ip", "Indicateurs de menace", "⚠ threat intel");
+
+  const matches = results.shodan?.data || results.shodan?.matches;
+  (matches||[]).slice(0,5).forEach((h,i)=>
+    add(`shodan_${i}`, `${h.ip_str||query}:${h.port||"?"}`, "ip", h.product||"Service exposé", "port ouvert"));
+
+  return nodes.length>1 ? {nodes, edges} : null;
+}
+
+/* ══ MODES ═══════════════════════════════════════════════════════════════════ */
+const MODES = [
+  {id:"investigation", label:"Investigation", icon:"🔍", color:"var(--cyan)",   desc:"Enquête approfondie",    subdesc:"Détective · Journaliste"},
+  {id:"particulier",   label:"Particulier",   icon:"👤", color:"var(--pink)",   desc:"Vérifier quelqu'un",     subdesc:"Vendeur · Date · Voisin"},
+  {id:"entreprise",    label:"Entreprise",    icon:"🏢", color:"var(--amber)",  desc:"Due diligence société",  subdesc:"Partenaire · Fournisseur"},
+  {id:"recrutement",   label:"Recrutement",   icon:"💼", color:"var(--purple)", desc:"Vérification candidat",  subdesc:"RH · Habilitation"},
+];
+
+/* ══ STYLES partagés ════════════════════════════════════════════════════════ */
+const S = {
+  card: (extra={}) => ({background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,padding:18,...extra}),
+  input: {background:"var(--bg)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",color:"var(--text)",fontSize:13,outline:"none",width:"100%",fontFamily:"'Inter',sans-serif"},
+  btn: (col="var(--cyan)", ghost=false) => ghost
+    ? {background:`${col}18`,border:`1px solid ${col}55`,borderRadius:7,padding:"8px 16px",color:col,cursor:"pointer",fontWeight:600,fontSize:12,fontFamily:"'Inter',sans-serif",transition:"all .15s"}
+    : {background:col,color:"#080c14",border:"none",borderRadius:7,padding:"9px 18px",cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:"'Inter',sans-serif",transition:"opacity .15s"},
+};
+
+/* ══ D3 Graph ═══════════════════════════════════════════════════════════════ */
+function GraphView({data}) {
+  const ref = useRef(null);
+  const [sel, setSel] = useState(null);
+  useEffect(()=>{
+    if(!data?.nodes||!ref.current||typeof d3==='undefined') return;
+    const el=ref.current, W=el.clientWidth||800, H=460;
+    d3.select(el).selectAll("*").remove();
+    const svg=d3.select(el).attr("viewBox",`0 0 ${W} ${H}`).style("background","var(--bg)");
+    const defs=svg.append("defs");
+    defs.append("marker").attr("id","a").attr("viewBox","0 -5 10 10").attr("refX",22).attr("refY",0).attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto")
+        .append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#334155");
+    const g=svg.append("g");
+    svg.call(d3.zoom().scaleExtent([.3,3]).on("zoom",e=>g.attr("transform",e.transform)));
+    const nodes=data.nodes.map(n=>({...n}));
+    const edges=data.edges.map(e=>({...e}));
+    const sim=d3.forceSimulation(nodes)
+      .force("link",d3.forceLink(edges).id(d=>d.id).distance(100))
+      .force("charge",d3.forceManyBody().strength(-280))
+      .force("center",d3.forceCenter(W/2,H/2))
+      .force("coll",d3.forceCollide(38));
+    const link=g.append("g").selectAll("line").data(edges).enter().append("line").attr("stroke","#1e2530").attr("stroke-width",1.5).attr("marker-end","url(#a)");
+    const lbl=g.append("g").selectAll("text").data(edges).enter().append("text").attr("font-size",8).attr("fill","#334155").attr("text-anchor","middle").text(d=>d.label||"");
+    const node=g.append("g").selectAll("g").data(nodes).enter().append("g").style("cursor","pointer")
+      .call(d3.drag().on("start",(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y;}).on("drag",(e,d)=>{d.fx=e.x;d.fy=e.y;}).on("end",(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}))
+      .on("click",(e,d)=>{e.stopPropagation();setSel(d);});
+    node.append("circle").attr("r",d=>d.type==="person"?20:15)
+      .attr("fill",d=>(NODE_TYPES[d.type]||NODE_TYPES.person).color+"28")
+      .attr("stroke",d=>(NODE_TYPES[d.type]||NODE_TYPES.person).color).attr("stroke-width",2);
+    node.append("text").attr("text-anchor","middle").attr("dominant-baseline","central").attr("font-size",d=>d.type==="person"?14:11).text(d=>(NODE_TYPES[d.type]||NODE_TYPES.person).icon);
+    node.append("text").attr("y",d=>d.type==="person"?28:22).attr("text-anchor","middle").attr("font-size",9).attr("fill","#c9d1d9").text(d=>d.label.length>16?d.label.slice(0,14)+"…":d.label);
+    sim.on("tick",()=>{
+      link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
+      lbl.attr("x",d=>(d.source.x+d.target.x)/2).attr("y",d=>(d.source.y+d.target.y)/2-4);
+      node.attr("transform",d=>`translate(${d.x},${d.y})`);
+    });
+    svg.on("click",()=>setSel(null));
+    return ()=>sim.stop();
+  },[data]);
+  return (
+    <div style={{position:"relative"}}>
+      <svg ref={ref} style={{width:"100%",height:460,borderRadius:10,border:"1px solid var(--border)",display:"block"}}/>
+      {sel&&(
+        <div style={{position:"absolute",top:10,right:10,background:"var(--bg2)",border:`1px solid ${(NODE_TYPES[sel.type]||NODE_TYPES.person).color}`,borderRadius:10,padding:14,minWidth:180}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+            <span style={{fontSize:20}}>{(NODE_TYPES[sel.type]||NODE_TYPES.person).icon}</span>
+            <button onClick={()=>setSel(null)} style={{background:"none",border:"none",color:"var(--muted)",cursor:"pointer"}}>✕</button>
+          </div>
+          <div style={{fontSize:13,fontWeight:700,color:(NODE_TYPES[sel.type]||NODE_TYPES.person).color,marginBottom:3}}>{sel.label}</div>
+          {sel.detail&&<div style={{fontSize:11,color:"var(--muted)"}}>{sel.detail}</div>}
+        </div>
+      )}
+      <div style={{textAlign:"center",fontSize:10,color:"var(--dim)",marginTop:6}}>🖱 Clic • Drag • Scroll pour zoomer</div>
+    </div>
+  );
+}
+
+/* ══ ScoreBar ════════════════════════════════════════════════════════════════ */
+function ScoreBar({score}) {
+  const col = score<30?"var(--green)":score<60?"var(--amber)":"var(--red)";
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+        <span style={{fontSize:10,color:"var(--muted)"}}>Score de risque</span>
+        <span style={{fontSize:16,fontWeight:800,color:col,fontFamily:"'IBM Plex Mono',monospace"}}>{score}<span style={{fontSize:10,color:"var(--muted)"}}>/100</span></span>
+      </div>
+      <div style={{height:7,background:"var(--border)",borderRadius:4,overflow:"hidden"}}>
+        <div style={{height:"100%",width:`${score}%`,background:col,borderRadius:4,transition:"width .8s ease"}}/>
+      </div>
+    </div>
+  );
+}
+
+/* ══ Dork link ═══════════════════════════════════════════════════════════════ */
+function Dork({d}) {
+  return (
+    <a href={d.url} target="_blank" rel="noopener"
+      style={{display:"block",background:"var(--bg)",border:"1px solid var(--border)",borderRadius:6,padding:"9px 12px",marginBottom:5,transition:"border-color .15s"}}
+      onMouseEnter={e=>e.currentTarget.style.borderColor="var(--blue)"}
+      onMouseLeave={e=>e.currentTarget.style.borderColor="var(--border)"}>
+      <div style={{fontSize:11,color:"var(--blue)",marginBottom:2}}>↗ {d.purpose||d.name}</div>
+      <div style={{fontSize:10,color:"var(--dim)",fontFamily:"'IBM Plex Mono',monospace",wordBreak:"break-all"}}>{d.query||d.url}</div>
+    </a>
+  );
+}
+
+/* ══ API Results panel ════════════════════════════════════════════════════════ */
+function ApiResultsPanel({results, queryType, loading}) {
+  const [open, setOpen] = useState({});
+  const toggle = k => setOpen(p=>({...p,[k]:!p[k]}));
+
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",gap:10,padding:14,background:"var(--bg)",borderRadius:8,border:"1px solid var(--border)"}}>
+      <span className="spin">⟳</span>
+      <span style={{fontSize:12,color:"var(--cyan)"}}>Interrogation des APIs en cours…</span>
+    </div>
+  );
+  if (!results || !Object.keys(results).length) return null;
+
+  const labels = {
+    annuaire:"🇫🇷 Annuaire Entreprises",bodacc:"⚖️ BODACC",opensanctions:"🚫 OpenSanctions",
+    pappers:"🏢 Pappers",hibp:"📧 Have I Been Pwned",hunter:"🎯 Hunter.io",
+    urlscan:"🔍 URLScan.io",virustotal:"🦠 VirusTotal",ipinfo:"🌍 IPInfo",
+    abuseipdb:"🛡️ AbuseIPDB",shodan:"🔭 Shodan",otx:"👾 AlienVault OTX",
+    crtsh:"🔐 Certificats SSL (crt.sh)",rdap:"🌐 WHOIS (RDAP)",ipapi:"📍 Géolocalisation IP",
+  };
+  const colors = {
+    annuaire:"var(--cyan)",bodacc:"var(--amber)",opensanctions:"var(--red)",
+    pappers:"var(--purple)",hibp:"var(--pink)",hunter:"var(--pink)",
+    urlscan:"var(--blue)",virustotal:"#22d3ee",ipinfo:"var(--green)",
+    abuseipdb:"var(--red)",shodan:"var(--purple)",otx:"var(--pink)",
+    crtsh:"var(--cyan)",rdap:"var(--blue)",ipapi:"var(--green)",
+  };
+
+  return (
+    <div>
+      <div style={{fontSize:11,color:"var(--muted)",marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{color:"var(--red)"}}>●</span>
+        Données temps réel — Type détecté : <strong style={{color:"var(--cyan)"}}>{queryType?.toUpperCase()}</strong>
+        <span style={{marginLeft:"auto",color:"var(--dim)"}}>{Object.keys(results).length} source{Object.keys(results).length>1?"s":""} interrogée{Object.keys(results).length>1?"s":""}</span>
+      </div>
+      {Object.entries(results).map(([k, v]) => {
+        const col = colors[k]||"var(--cyan)";
+        const hasError = v?.error;
+        const isOpen = open[k];
+        return (
+          <div key={k} style={{background:"var(--bg)",border:`1px solid ${col}22`,borderRadius:8,marginBottom:7,overflow:"hidden"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",cursor:"pointer"}}
+              onClick={()=>toggle(k)}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:14}}>{labels[k]||k}</span>
+                {hasError && <span style={{fontSize:9,color:"var(--red)",padding:"1px 5px",background:"rgba(239,68,68,.1)",borderRadius:3}}>Erreur</span>}
+              </div>
+              <span style={{fontSize:11,color:"var(--muted)"}}>{isOpen?"▲":"▼"}</span>
+            </div>
+            {isOpen && (
+              <div style={{padding:"0 14px 14px"}}>
+                {hasError ? (
+                  <div style={{fontSize:11,color:"var(--red)"}}>{v.error}</div>
+                ) : (
+                  <pre style={{fontSize:10,color:"var(--muted)",overflow:"auto",maxHeight:240,background:"var(--bg2)",padding:10,borderRadius:6,whiteSpace:"pre-wrap",wordBreak:"break-all"}}>
+                    {JSON.stringify(v, null, 2).slice(0, 2000)}{JSON.stringify(v).length>2000?"…":""}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ══ APP principal ════════════════════════════════════════════════════════════ */
+function App() {
+  const [screen, setScreen]           = useState("home");
+  const [mode, setMode]               = useState(null);
+  const [query, setQuery]             = useState("");
+  const [ctx, setCtx]                 = useState("");
+  const [report, setReport]           = useState(null);
+  const [loading, setLoading]         = useState(false);
+  const [loadMsg, setLoadMsg]         = useState("");
+  const [reportTab, setReportTab]     = useState("rapport");
+  const [apiResults, setApiResults]   = useState(null);
+  const [apiLoading, setApiLoading]   = useState(false);
+  const [apiQType, setApiQType]       = useState("");
+  const [config, setConfig]           = useState({});
+  const [history, setHistory]         = useState([]);
+  const [cases, setCases]             = useState([]);
+  const [activeCase, setActiveCase]   = useState(null);
+  const [newCaseName, setNewCaseName] = useState("");
+  const [checks, setChecks]           = useState([]);
+  const [batchTargets, setBatchTargets] = useState("");
+  const [batchMode, setBatchMode]     = useState("investigation");
+  const [batchResults, setBatchResults] = useState([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [usernameInput, setUsernameInput] = useState("");
+  const [usernameRes, setUsernameRes] = useState(null);
+  const [usernameLoading, setUsernameLoading] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [pdfLoading, setPdfLoading]   = useState(false);
+
+  const mc = mode?.color || "var(--cyan)";
+
+  // Load config + history + cases on mount
+  useEffect(()=>{
+    api.get("/api/config").then(setConfig).catch(()=>{});
+    api.get("/api/history").then(setHistory).catch(()=>{});
+    api.get("/api/cases").then(setCases).catch(()=>{});
+  },[]);
+
+  const refreshHistory = () => api.get("/api/history").then(setHistory).catch(()=>{});
+  const refreshCases   = () => api.get("/api/cases").then(setCases).catch(()=>{});
+
+  const reset = () => {
+    setScreen("home"); setMode(null); setQuery(""); setCtx("");
+    setReport(null); setApiResults(null); setReportTab("rapport");
+  };
+
+  // Generate report
+  const generate = async () => {
+    if (!query.trim()) return;
+    setLoading(true); setReport(null); setApiResults(null);
+    setScreen("loading"); setLoadMsg("Analyse en cours…");
+
+    // Les données réelles (APIs publiques) sont toujours récupérées,
+    // même si le rapport IA échoue ou n'est pas configuré (pas de clé GROQ_API_KEY).
+    setApiLoading(true);
+    api.get(`/api/analyze?q=${encodeURIComponent(query)}`)
+      .then(d=>{ setApiResults(d.results); setApiQType(d.query_type); setApiLoading(false); })
+      .catch(()=>setApiLoading(false));
+
+    try {
+      const r = await api.post("/api/report", {query, mode: mode.id, ctx});
+      if (r.checklist) setChecks(r.checklist.map(()=>false));
+      setReport(r); setReportTab("rapport");
+      refreshHistory();
+    } catch(e) {
+      setReport({error:true, errorMsg:e.message, target:query});
+      setReportTab("realdata");
+    }
+    setScreen("report");
+    setLoading(false);
+  };
+
+  // Batch
+  const runBatch = async () => {
+    const targets = batchTargets.split('\n').map(l=>l.trim()).filter(Boolean).slice(0,10);
+    if (!targets.length) return;
+    setBatchRunning(true);
+    setBatchResults(targets.map(t=>({query:t, status:"loading"})));
+    try {
+      const res = await api.post("/api/batch", {targets, mode: batchMode});
+      setBatchResults(res.results || []);
+      refreshHistory();
+    } catch(e) {
+      setBatchResults(targets.map(t=>({query:t, status:"error", error:e.message})));
+    }
+    setBatchRunning(false);
+  };
+
+  // Username
+  const runUsername = async () => {
+    if (!usernameInput.trim()) return;
+    setUsernameLoading(true); setUsernameRes(null);
+    try {
+      const r = await api.post("/api/username", {username: usernameInput.trim()});
+      setUsernameRes(r);
+    } catch(e) { setUsernameRes({error: e.message}); }
+    setUsernameLoading(false);
+  };
+
+  // PDF
+  const exportPDF = async () => {
+    if (!report || report.error) return;
+    setPdfLoading(true);
+    try {
+      const r = await fetch("/api/export/pdf", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({report, mode_label: mode?.label||"Investigation"})
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = `osint-${(report.target||"rapport").replace(/\s+/g,"-")}.pdf`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch(e) { alert("Erreur PDF: "+e.message); }
+    setPdfLoading(false);
+  };
+
+  // Share link
+  const copyShareLink = () => {
+    if (!report || report.error) return;
+    try {
+      const payload = btoa(unescape(encodeURIComponent(JSON.stringify({report, mode:mode?.id, query, ts:Date.now()}))));
+      const url = `${window.location.href.split('#')[0]}#share=${payload}`;
+      navigator.clipboard.writeText(url).catch(()=>{ prompt("Copiez ce lien:", url); });
+      setShareCopied(true); setTimeout(()=>setShareCopied(false), 2500);
+    } catch(e) { alert("Erreur: "+e.message); }
+  };
+
+  // Cases
+  const createCase = async () => {
+    if (!newCaseName.trim()) return;
+    await api.post("/api/cases", {name:newCaseName}).catch(()=>{});
+    setNewCaseName(""); refreshCases();
+  };
+  const updateCase = async (id, upd) => {
+    await fetch(`/api/cases/${id}`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(upd)}).catch(()=>{});
+    refreshCases();
+  };
+  const deleteCase = async (id) => {
+    await fetch(`/api/cases/${id}`, {method:"DELETE"}).catch(()=>{});
+    if(activeCase===id) setActiveCase(null);
+    refreshCases();
+  };
+
+  // ── Report tab bar ────────────────────────────────────────
+  const tabs = [
+    {id:"rapport",   label:"📄 Rapport"},
+    {id:"realdata",  label:"🔴 Données réelles", badge: apiLoading?"…": apiResults?true:false},
+    {id:"graphe",    label:"🕸 Graphe"},
+    {id:"sources",   label:"🔗 Sources"},
+    {id:"timeline",  label:"⏱ Timeline"},
+  ];
+
+  const rtab = (active) => ({
+    padding:"7px 14px", border:`1px solid ${active?mc:"var(--border)"}`,
+    background:active?mc+"18":"transparent", borderRadius:7, color:active?mc:"var(--muted)",
+    cursor:"pointer", fontSize:12, fontWeight:600, fontFamily:"'Inter',sans-serif",
+    position:"relative", transition:"all .15s",
+  });
+
+  // Graphe : priorité aux vraies données, repli sur le graphe IA si présent
+  const graphData = buildRealGraph(query, apiQType, apiResults) || (report?.graph?.nodes?.length>0 ? report.graph : null);
+
+  // ── Layout ────────────────────────────────────────────────
+  const isFullH = screen==="framework"||screen==="cases";
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100vh",overflow:"hidden"}}>
+
+      {/* ── HEADER ── */}
+      <div style={{background:"rgba(13,16,23,.98)",backdropFilter:"blur(20px)",borderBottom:"1px solid var(--border)",padding:"0 20px",height:54,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0,gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={reset}>
+          <div style={{width:28,height:28,borderRadius:7,background:`linear-gradient(135deg,${mc},var(--purple))`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🔭</div>
+          <span style={{fontWeight:800,fontSize:14,color:mc,letterSpacing:2,fontFamily:"'IBM Plex Mono',monospace"}}>OSINT</span>
+        </div>
+        <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+          {[
+            {label:"🔍 Username", s:"username", c:"var(--blue)"},
+            {label:"📦 Batch",    s:"batch",    c:"var(--purple)"},
+            {label:"🕐 Historique", s:"history",c:"var(--amber)", badge:history.length},
+            {label:"📋 Dossiers",  s:"cases",   c:"var(--amber)"},
+            {label:"🗺️ Framework", s:"framework",c:"var(--cyan)"},
+          ].map(b=>(
+            <button key={b.s} onClick={()=>setScreen(b.s)}
+              style={{...S.btn(b.c, true), fontSize:11, padding:"5px 10px", position:"relative"}}>
+              {b.label}
+              {b.badge>0&&<span style={{position:"absolute",top:-4,right:-4,background:b.c,color:"var(--bg)",borderRadius:"50%",width:14,height:14,fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700}}>{Math.min(b.badge,9)}</span>}
+            </button>
+          ))}
+          <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",background:config.groq?"rgba(34,197,94,.08)":"rgba(239,68,68,.08)",border:`1px solid ${config.groq?"rgba(34,197,94,.3)":"rgba(239,68,68,.3)"}`,borderRadius:6,fontSize:10,color:config.groq?"var(--green)":"var(--red)"}}>
+            <span style={{width:6,height:6,borderRadius:"50%",background:config.groq?"var(--green)":"var(--red)",display:"inline-block"}}/>
+            {config.groq?"IA connectée":"IA non configurée"}
+          </div>
+          {screen!=="home"&&<button onClick={reset} style={{...S.btn("var(--dim)",true),fontSize:11,padding:"5px 10px"}}>← Accueil</button>}
+        </div>
+      </div>
+
+      {/* ── CONTENT ── */}
+      <div style={{flex:1,overflow:isFullH?"hidden":"auto",display:isFullH?"flex":"block",flexDirection:"column"}}>
+
+      {/* HOME */}
+      {screen==="home"&&(
+        <div style={{maxWidth:640,margin:"48px auto",padding:"0 16px"}} className="fade">
+          <div style={{textAlign:"center",marginBottom:36}}>
+            <div style={{fontSize:40,marginBottom:12}}>🔭</div>
+            <div style={{fontSize:22,fontWeight:800,color:"var(--text)",marginBottom:6}}>Open Source Intelligence</div>
+            <div style={{fontSize:13,color:"var(--muted)"}}>Choisissez un mode pour démarrer votre analyse</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+            {MODES.map(m=>(
+              <div key={m.id} onClick={()=>{setMode(m);setScreen("search");}}
+                style={{...S.card(),border:`1px solid ${m.color}33`,cursor:"pointer",transition:"all .2s"}}
+                onMouseEnter={e=>{e.currentTarget.style.background=m.color+"0a";e.currentTarget.style.borderColor=m.color;}}
+                onMouseLeave={e=>{e.currentTarget.style.background="var(--bg2)";e.currentTarget.style.borderColor=m.color+"33";}}>
+                <div style={{fontSize:28,marginBottom:8}}>{m.icon}</div>
+                <div style={{fontSize:15,fontWeight:700,color:m.color,marginBottom:3}}>{m.label}</div>
+                <div style={{fontSize:12,color:"var(--text)",marginBottom:3}}>{m.desc}</div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>{m.subdesc}</div>
+              </div>
+            ))}
+          </div>
+          {/* API status */}
+          <div style={{...S.card(),borderColor:Object.values(config).filter(Boolean).length>1?"rgba(34,197,94,.2)":"rgba(239,68,68,.2)"}}>
+            <div style={{fontSize:11,color:"var(--muted)",marginBottom:8,letterSpacing:1}}>APIS CONNECTÉES</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+              {Object.entries(config).map(([k,v])=>(
+                <span key={k} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:v?"rgba(34,197,94,.1)":"rgba(239,68,68,.08)",color:v?"var(--green)":"var(--dim)",border:`1px solid ${v?"rgba(34,197,94,.2)":"rgba(239,68,68,.15)"}`}}>
+                  {v?"●":"○"} {k}
+                </span>
+              ))}
+            </div>
+            {!config.groq&&(
+              <div style={{marginTop:10,fontSize:11,color:"var(--amber)"}}>
+                ⚠️ Ajoutez <code style={{background:"var(--bg)",padding:"1px 4px",borderRadius:3}}>GROQ_API_KEY</code> dans votre fichier <code style={{background:"var(--bg)",padding:"1px 4px",borderRadius:3}}>.env</code> pour activer les rapports IA.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* SEARCH */}
+      {screen==="search"&&mode&&(
+        <div style={{maxWidth:540,margin:"48px auto",padding:"0 16px"}} className="fade">
+          <div style={{textAlign:"center",marginBottom:24}}>
+            <div style={{fontSize:36,marginBottom:8}}>{mode.icon}</div>
+            <div style={{fontSize:18,fontWeight:800,color:mc,marginBottom:4}}>{mode.label}</div>
+            <div style={{fontSize:12,color:"var(--muted)"}}>{mode.desc}</div>
+          </div>
+          <div style={{...S.card(),border:`1px solid ${mc}33`}}>
+            <div style={{fontSize:10,color:"var(--muted)",marginBottom:5,letterSpacing:1}}>CIBLE</div>
+            <input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&query&&generate()}
+              placeholder={`Nom, email, SIREN, IP, username…`}
+              style={{...S.input,marginBottom:12,border:`1px solid ${mc}44`,fontSize:14}} autoFocus/>
+            <div style={{fontSize:10,color:"var(--muted)",marginBottom:5,letterSpacing:1}}>CONTEXTE (optionnel)</div>
+            <textarea value={ctx} onChange={e=>setCtx(e.target.value)} placeholder="Informations supplémentaires…" rows={2}
+              style={{...S.input,marginBottom:14,resize:"vertical"}}/>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={reset} style={{flex:1,background:"transparent",border:"1px solid var(--border)",borderRadius:8,padding:10,color:"var(--muted)",cursor:"pointer",fontSize:13}}>← Retour</button>
+              <button onClick={generate} disabled={!query.trim()}
+                style={{flex:2,background:query?mc:"var(--border)",color:"var(--bg)",border:"none",borderRadius:8,padding:10,cursor:query?"pointer":"default",fontWeight:700,fontSize:13,opacity:query?1:.5}}>
+                Lancer l'analyse →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LOADING */}
+      {screen==="loading"&&(
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"60vh"}} className="fade">
+          <div style={{fontSize:48,marginBottom:16}} className="spin">⟳</div>
+          <div style={{fontSize:16,color:mc,marginBottom:6}}>{loadMsg}</div>
+          <div style={{fontSize:12,color:"var(--muted)"}} className="pulse">"{query}"</div>
+        </div>
+      )}
+
+      {/* REPORT */}
+      {screen==="report"&&(
+        <div style={{maxWidth:880,margin:"0 auto",padding:"20px 16px"}} className="fade">
+          {report&&(
+            <div>
+              {/* Report header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:8}}>
+                <div>
+                  <span style={{fontSize:10,padding:"3px 10px",background:mc+"18",border:`1px solid ${mc}44`,borderRadius:5,color:mc,display:"inline-block",marginBottom:5}}>{mode?.icon} {mode?.label}</span>
+                  <div style={{fontSize:20,fontWeight:800,color:"var(--text)"}}>{report.target}</div>
+                  <div style={{fontSize:11,color:"var(--muted)"}}>{new Date().toLocaleDateString('fr-FR')} {new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</div>
+                </div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <button onClick={exportPDF} disabled={pdfLoading||report.error} style={S.btn("var(--red)",true)}>
+                    {pdfLoading?<span className="spin">⟳</span>:"📄 PDF"}
+                  </button>
+                  <button onClick={copyShareLink} disabled={report.error} style={S.btn("var(--green)",true)}>
+                    {shareCopied?"✅ Copié !":"🔗 Partager"}
+                  </button>
+                  <button onClick={async()=>{
+                    if(!newCaseName) {
+                      const n = report.target;
+                      await api.post("/api/cases",{name:n}).catch(()=>{});
+                      refreshCases(); setScreen("cases");
+                    }
+                  }} style={S.btn("var(--amber)",true)}>📋 → Dossier</button>
+                  <button onClick={()=>setScreen("search")} style={S.btn("var(--dim)",true)}>🔄</button>
+                  <button onClick={reset} style={S.btn("var(--dim)",true)}>⬅</button>
+                </div>
+              </div>
+
+              {/* Tabs */}
+              <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+                {tabs.map(t=>(
+                  <button key={t.id} onClick={()=>setReportTab(t.id)} style={{...rtab(reportTab===t.id),position:"relative"}}>
+                    {t.label}
+                    {t.badge===true&&<span style={{position:"absolute",top:-3,right:-3,width:8,height:8,borderRadius:"50%",background:"var(--green)"}}/>}
+                    {t.badge==="…"&&<span style={{position:"absolute",top:-3,right:-3,width:8,height:8,borderRadius:"50%",background:"var(--amber)"}} className="pulse"/>}
+                  </button>
+                ))}
+              </div>
+
+              {/* ONGLET RAPPORT */}
+              {reportTab==="rapport"&&(
+                <div>
+                  {report.error&&(
+                    <div style={{textAlign:"center",padding:40,marginBottom:12,background:"rgba(245,158,11,.06)",border:"1px solid rgba(245,158,11,.25)",borderRadius:10}}>
+                      <div style={{fontSize:30,marginBottom:10}}>🤖</div>
+                      <div style={{color:"var(--amber)",marginBottom:6,fontSize:13,fontWeight:700}}>Rapport IA non disponible</div>
+                      <div style={{color:"var(--muted)",fontSize:12,marginBottom:14}}>{report.errorMsg} — les données réelles restent disponibles ci-dessous.</div>
+                      <button onClick={()=>setReportTab("realdata")} style={S.btn(mc,true)}>🔴 Voir les données réelles</button>
+                    </div>
+                  )}
+                  {!report.error&&(<>
+                  {/* Synthèse */}
+                  <div style={{background:`linear-gradient(135deg,${mc}12,${mc}04)`,border:`1px solid ${mc}33`,borderRadius:10,padding:16,marginBottom:12,borderLeft:`4px solid ${mc}`}}>
+                    <div style={{fontSize:10,color:mc,marginBottom:5,letterSpacing:1,fontWeight:700}}>SYNTHÈSE EXÉCUTIVE</div>
+                    <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}}>{report.executive_summary}</div>
+                  </div>
+
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                    {/* Score */}
+                    {report.risk&&(
+                      <div style={S.card()}>
+                        <div style={{fontSize:10,color:"var(--red)",marginBottom:10,letterSpacing:1,fontWeight:700}}>⚠️ RISQUE</div>
+                        <ScoreBar score={report.risk.score||0}/>
+                        <div style={{fontSize:12,color:"var(--text)",margin:"8px 0",lineHeight:1.6}}>{report.risk.summary}</div>
+                        {report.risk.flags?.filter(f=>f).map((f,i)=><div key={i} style={{fontSize:11,color:"var(--amber)"}}>🚩 {f}</div>)}
+                        {report.risk.positive?.map((p,i)=><div key={i} style={{fontSize:11,color:"var(--green)"}}>✅ {p}</div>)}
+                      </div>
+                    )}
+                    {/* Identité */}
+                    {(report.identity||report.legal_identity)&&(
+                      <div style={S.card()}>
+                        <div style={{fontSize:10,color:"var(--cyan)",marginBottom:10,letterSpacing:1,fontWeight:700}}>👤 IDENTITÉ</div>
+                        <div style={{fontSize:12,color:"var(--text)",lineHeight:1.7,marginBottom:6}}>{(report.identity||report.legal_identity).summary}</div>
+                        {(report.identity||report.legal_identity).locations?.length>0&&<div style={{fontSize:11,color:"var(--muted)"}}>📍 {(report.identity||report.legal_identity).locations.join(", ")}</div>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Registres */}
+                  {(report.records||report.registries||report.legal_records)&&(()=>{
+                    const r=report.records||report.registries||report.legal_records;
+                    return (
+                      <div style={{...S.card({border:"1px solid var(--purple)33"}),marginBottom:12}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                          <div style={{fontSize:10,color:"var(--purple)",letterSpacing:1,fontWeight:700}}>🏢 REGISTRES LÉGAUX</div>
+                          <div style={{display:"flex",gap:5}}>
+                            {[["Pappers",r.pappers_url||`https://pappers.fr/recherche?q=${encodeURIComponent(query)}`],["Infogreffe","https://infogreffe.fr"],["Societe.com",`https://societe.com/cgi-bin/search?champs=${encodeURIComponent(query)}`]].map(([n,u])=>(
+                              <a key={n} href={u} target="_blank" style={{fontSize:10,padding:"4px 8px",background:"rgba(139,92,246,.1)",border:"1px solid rgba(139,92,246,.3)",borderRadius:5,color:"var(--purple)",textDecoration:"none"}}>🔍 {n}</a>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{fontSize:12,color:"var(--text)",marginBottom:8,lineHeight:1.6}}>{r.summary}</div>
+                        {r.companies?.map((co,i)=>(
+                          <div key={i} style={{background:"var(--bg)",borderRadius:6,padding:"8px 12px",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+                            <div>
+                              <div style={{fontSize:12,fontWeight:700,color:"var(--text)"}}>{co.name}</div>
+                              <div style={{fontSize:10,color:"var(--muted)"}}>{co.role}{co.creation?" · "+co.creation:""}{co.siren?" · SIREN: "+co.siren:""}</div>
+                            </div>
+                            <span style={{fontSize:10,padding:"2px 7px",borderRadius:3,background:co.status?.includes("Active")?"rgba(34,197,94,.1)":"rgba(239,68,68,.1)",color:co.status?.includes("Active")?"var(--green)":"var(--red)"}}>{co.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Profil pro */}
+                  {report.professional&&(
+                    <div style={{...S.card(),marginBottom:12}}>
+                      <div style={{fontSize:10,color:"#0077b5",marginBottom:8,letterSpacing:1,fontWeight:700}}>💼 PROFIL PROFESSIONNEL</div>
+                      <div style={{fontSize:12,color:"var(--text)",marginBottom:8,lineHeight:1.6}}>{report.professional.summary}</div>
+                      <a href={report.professional.linkedin_url} target="_blank" style={{fontSize:11,padding:"5px 12px",background:"rgba(0,119,181,.1)",border:"1px solid rgba(0,119,181,.3)",borderRadius:5,color:"#58a6ff",textDecoration:"none"}}>🔍 Rechercher sur LinkedIn</a>
+                    </div>
+                  )}
+
+                  {/* Checklist recrutement */}
+                  {report.checklist?.length>0&&(
+                    <div style={{...S.card(),marginBottom:12}}>
+                      <div style={{fontSize:10,color:"var(--green)",marginBottom:8,letterSpacing:1,fontWeight:700}}>✅ CHECKLIST</div>
+                      {report.checklist.map((item,i)=>(
+                        <label key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,cursor:"pointer"}}>
+                          <input type="checkbox" checked={checks[i]||false} onChange={()=>setChecks(p=>{const n=[...p];n[i]=!n[i];return n;})} style={{accentColor:"var(--green)",width:13,height:13}}/>
+                          <span style={{fontSize:12,color:checks[i]?"var(--green)":"var(--muted)",textDecoration:checks[i]?"line-through":"none"}}>{item.item}</span>
+                        </label>
+                      ))}
+                      <div style={{height:3,background:"var(--border)",borderRadius:2,marginTop:8}}>
+                        <div style={{height:"100%",width:`${(checks.filter(Boolean).length/(checks.length||1))*100}%`,background:"var(--green)",borderRadius:2,transition:"width .3s"}}/>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Quick checks */}
+                  {report.quick_checks&&(
+                    <div style={{...S.card(),marginBottom:12}}>
+                      <div style={{fontSize:10,color:"var(--pink)",marginBottom:10,letterSpacing:1,fontWeight:700}}>✅ VÉRIFICATIONS RAPIDES</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                        {report.quick_checks.map((c,i)=>{
+                          const col=c.result==="oui"?"var(--green)":c.result==="non"?"var(--red)":"var(--amber)";
+                          return (
+                            <div key={i} style={{background:"var(--bg)",borderRadius:7,padding:"10px 12px",border:`1px solid ${col}22`}}>
+                              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                                <span style={{fontSize:12,color:"var(--text)"}}>{c.label}</span>
+                                <span style={{fontSize:10,fontWeight:700,color:col,textTransform:"uppercase"}}>{c.result}</span>
+                              </div>
+                              <div style={{fontSize:11,color:"var(--muted)",lineHeight:1.5}}>{c.detail}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {report.advice&&<div style={{marginTop:10}}>{report.advice.map((a,i)=><div key={i} style={{display:"flex",gap:6,marginBottom:5}}><span style={{color:"var(--amber)"}}>→</span><span style={{fontSize:12,color:"var(--text)"}}>{a}</span></div>)}</div>}
+                    </div>
+                  )}
+
+                  {/* Dorks */}
+                  {report.google_dorks?.length>0&&(
+                    <div style={{...S.card(),marginBottom:12}}>
+                      <div style={{fontSize:10,color:"var(--blue)",marginBottom:8,letterSpacing:1,fontWeight:700}}>🔎 GOOGLE DORKS</div>
+                      {report.google_dorks.map((d,i)=><Dork key={i} d={d}/>)}
+                    </div>
+                  )}
+
+                  {/* Conclusion */}
+                  <div style={{background:"rgba(34,197,94,.05)",border:"1px solid rgba(34,197,94,.2)",borderRadius:10,padding:14}}>
+                    <div style={{fontSize:10,color:"var(--green)",marginBottom:5,letterSpacing:1,fontWeight:700}}>✅ CONCLUSION</div>
+                    <div style={{fontSize:13,color:"var(--text)",lineHeight:1.7}}>{report.conclusion||report.risk?.verdict}</div>
+                  </div>
+                  </>)}
+                </div>
+              )}
+
+              {/* ONGLET DONNÉES RÉELLES */}
+              {reportTab==="realdata"&&(
+                <div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:12}}>🔴 Données en temps réel</div>
+                  <ApiResultsPanel results={apiResults} queryType={apiQType} loading={apiLoading}/>
+                  {!apiLoading&&!apiResults&&<div style={{textAlign:"center",padding:30,color:"var(--muted)",fontSize:12}}>Aucun résultat API — vérifiez vos clés dans .env</div>}
+                </div>
+              )}
+
+              {/* ONGLET GRAPHE */}
+              {reportTab==="graphe"&&(
+                <div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:10}}>🕸 Cartographie des connexions</div>
+                  {graphData ? (
+                    <GraphView data={graphData}/>
+                  ) : apiLoading ? (
+                    <div style={{textAlign:"center",padding:40,color:"var(--muted)"}}><span className="spin">⟳</span> Construction du graphe…</div>
+                  ) : (
+                    <div style={{textAlign:"center",padding:40,color:"var(--muted)"}}>Aucune donnée de graphe pour cette cible.</div>
+                  )}
+                </div>
+              )}
+
+              {/* ONGLET SOURCES */}
+              {reportTab==="sources"&&(
+                <div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:4}}>🔗 Sources — liens directs pré-remplis</div>
+                  <div style={{fontSize:12,color:"var(--muted)",marginBottom:14}}>Tous les liens sont pré-remplis avec <strong style={{color:"var(--text)"}}>{query}</strong></div>
+                  {[
+                    {cat:"🇫🇷 Registres légaux", col:"var(--purple)", links:[
+                      {n:"Pappers",url:`https://pappers.fr/recherche?q=${encodeURIComponent(query)}`},
+                      {n:"Infogreffe",url:`https://infogreffe.fr/recherche-siret-siren/chercher-une-entreprise.html?query=${encodeURIComponent(query)}`},
+                      {n:"Societe.com",url:`https://societe.com/cgi-bin/search?champs=${encodeURIComponent(query)}`},
+                      {n:"Annuaire Entreprises",url:`https://annuaire-entreprises.data.gouv.fr/rechercher?terme=${encodeURIComponent(query)}`},
+                      {n:"BODACC",url:`https://www.bodacc.fr/annonce/liste/?q.text=${encodeURIComponent(query)}`},
+                      {n:"OpenSanctions",url:`https://opensanctions.org/search/?q=${encodeURIComponent(query)}`},
+                    ]},
+                    {cat:"🌐 Réseaux sociaux", col:"var(--pink)", links:[
+                      {n:"LinkedIn",url:`https://linkedin.com/search/results/people/?keywords=${encodeURIComponent(query)}`},
+                      {n:"Twitter/X",url:`https://twitter.com/search?q=${encodeURIComponent(query)}`},
+                      {n:"Facebook",url:`https://facebook.com/search/people/?q=${encodeURIComponent(query)}`},
+                      {n:"Instagram",url:`https://google.com/search?q=site:instagram.com+"${encodeURIComponent(query)}"`},
+                      {n:"TikTok",url:`https://tiktok.com/search?q=${encodeURIComponent(query)}`},
+                    ]},
+                    {cat:"📧 Email & fuites", col:"var(--amber)", links:[
+                      {n:"Have I Been Pwned",url:`https://haveibeenpwned.com/account/${encodeURIComponent(query)}`},
+                      {n:"Hunter.io",url:`https://hunter.io/email-verifier/${encodeURIComponent(query)}`},
+                      {n:"EmailRep",url:`https://emailrep.io/${encodeURIComponent(query)}`},
+                    ]},
+                    {cat:"🔐 Cyber & IP", col:"var(--red)", links:[
+                      {n:"Shodan",url:`https://shodan.io/search?query=${encodeURIComponent(query)}`},
+                      {n:"VirusTotal",url:`https://virustotal.com/gui/search/${encodeURIComponent(query)}`},
+                      {n:"Censys",url:`https://search.censys.io/search?resource=hosts&q=${encodeURIComponent(query)}`},
+                      {n:"URLScan.io",url:`https://urlscan.io/search/#${encodeURIComponent(query)}`},
+                      {n:"WHOIS",url:`https://who.is/whois/${encodeURIComponent(query)}`},
+                    ]},
+                    {cat:"🗄️ Archives & preuves", col:"var(--green)", links:[
+                      {n:"Wayback Machine",url:`https://web.archive.org/web/*/${encodeURIComponent(query)}`},
+                      {n:"Archive.ph",url:`https://archive.ph/search/?q=${encodeURIComponent(query)}`},
+                      {n:"Archiver cette URL",url:`https://web.archive.org/save/${encodeURIComponent(query)}`},
+                    ]},
+                  ].map(({cat,col,links})=>(
+                    <div key={cat} style={{marginBottom:12}}>
+                      <div style={{fontSize:11,color:col,fontWeight:700,marginBottom:6,letterSpacing:1}}>{cat}</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+                        {links.map(l=>(
+                          <a key={l.n} href={l.url} target="_blank"
+                            style={{background:"var(--bg)",border:`1px solid ${col}22`,borderRadius:7,padding:"8px 10px",textDecoration:"none",fontSize:11,color:col,display:"flex",alignItems:"center",gap:5,transition:"all .15s"}}
+                            onMouseEnter={e=>{e.currentTarget.style.borderColor=col;e.currentTarget.style.background=col+"0a";}}
+                            onMouseLeave={e=>{e.currentTarget.style.borderColor=col+"22";e.currentTarget.style.background="var(--bg)";}}>
+                            🔗 {l.n}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ONGLET TIMELINE */}
+              {reportTab==="timeline"&&(
+                <div>
+                  <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginBottom:14}}>⏱ Timeline de l'investigation</div>
+                  <div style={{...S.card()}}>
+                    <div style={{position:"relative",paddingLeft:20}}>
+                      <div style={{position:"absolute",left:7,top:0,bottom:0,width:2,background:"var(--border)"}}/>
+                      {[
+                        {date:new Date().toLocaleDateString('fr-FR'),event:`Rapport ${mode?.label} généré — score ${report.risk?.score||0}/100`,type:"auto"},
+                        ...(report.timeline||[]),
+                      ].map((t,i)=>(
+                        <div key={i} style={{position:"relative",marginBottom:12,paddingLeft:14}}>
+                          <div style={{position:"absolute",left:-7,top:4,width:10,height:10,borderRadius:"50%",background:t.type==="auto"?"var(--cyan)":"var(--amber)",border:"2px solid var(--bg)"}}/>
+                          <div style={{fontSize:10,color:"var(--muted)",marginBottom:1}}>{t.date}</div>
+                          <div style={{fontSize:12,color:"var(--text)"}}>{t.event}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div style={{background:"rgba(245,158,11,.04)",border:"1px solid rgba(245,158,11,.2)",borderRadius:7,padding:"8px 12px",fontSize:10,color:"var(--muted)",marginTop:12,lineHeight:1.6}}>
+                ⚖️ Sources publiques uniquement — Respectez le RGPD et la loi Informatique & Libertés.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* HISTORIQUE */}
+      {screen==="history"&&(
+        <div style={{maxWidth:720,margin:"0 auto",padding:"20px 16px"}} className="fade">
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <div style={{fontSize:18,fontWeight:800,color:"var(--text)"}}>🕐 Historique</div>
+            <button onClick={()=>{api.get("/api/history/").catch(()=>{});fetch("/api/history",{method:"DELETE"}).then(()=>setHistory([])).catch(()=>{});}} style={S.btn("var(--red)",true)}>🗑 Effacer</button>
+          </div>
+          {!history.length ? <div style={{textAlign:"center",padding:48,color:"var(--muted)"}}>Aucune recherche encore effectuée.</div> : (
+            history.map((h,i)=>{
+              const m=MODES.find(x=>x.id===h.mode)||MODES[0];
+              const col=h.risk<30?"var(--green)":h.risk<60?"var(--amber)":"var(--red)";
+              return (
+                <div key={h.id||i}
+                  style={{...S.card({cursor:"pointer",marginBottom:8,display:"flex",alignItems:"center",gap:12,transition:"border-color .15s"})}}
+                  onMouseEnter={e=>e.currentTarget.style.borderColor=m.color}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor="var(--border)"}
+                  onClick={()=>{setQuery(h.query);setMode(m);setScreen("search");}}>
+                  <span style={{fontSize:22}}>{h.mode_icon||m.icon}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"var(--text)",marginBottom:2}}>{h.query}</div>
+                    <div style={{fontSize:11,color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.summary}</div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:10,color:"var(--muted)"}}>{h.created_at?.slice(0,10)}</div>
+                    {h.risk>0&&<div style={{fontSize:11,fontWeight:700,color:col}}>⚠ {h.risk}/100</div>}
+                  </div>
+                  <span style={{fontSize:10,padding:"3px 8px",background:m.color+"18",border:`1px solid ${m.color}33`,borderRadius:5,color:m.color,flexShrink:0}}>{h.mode_label||m.label}</span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* BATCH */}
+      {screen==="batch"&&(
+        <div style={{maxWidth:820,margin:"0 auto",padding:"20px 16px"}} className="fade">
+          <div style={{fontSize:18,fontWeight:800,color:"var(--text)",marginBottom:4}}>📦 Analyse en lot</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Analysez jusqu'à 10 cibles en parallèle. Une par ligne.</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:14}}>
+            <div style={S.card()}>
+              <div style={{fontSize:10,color:"var(--muted)",marginBottom:6,letterSpacing:1}}>CIBLES (une par ligne)</div>
+              <textarea value={batchTargets} onChange={e=>setBatchTargets(e.target.value)} rows={8}
+                placeholder={"Jean Dupont\ncontact@acme.fr\nACME SAS\n192.168.1.1"} style={{...S.input,resize:"vertical",fontSize:12}}/>
+              <div style={{fontSize:10,color:"var(--muted)",marginTop:6}}>{batchTargets.split('\n').filter(l=>l.trim()).length} cible{batchTargets.split('\n').filter(l=>l.trim()).length!==1?"s":""} détectée{batchTargets.split('\n').filter(l=>l.trim()).length!==1?"s":""}</div>
+            </div>
+            <div style={S.card()}>
+              <div style={{fontSize:10,color:"var(--muted)",marginBottom:8,letterSpacing:1}}>MODE</div>
+              {MODES.map(m=>(
+                <button key={m.id} onClick={()=>setBatchMode(m.id)}
+                  style={{width:"100%",padding:"9px 12px",borderRadius:7,border:`1px solid ${batchMode===m.id?m.color:"var(--border)"}`,background:batchMode===m.id?m.color+"12":"transparent",color:batchMode===m.id?m.color:"var(--muted)",cursor:"pointer",textAlign:"left",fontSize:12,display:"flex",alignItems:"center",gap:8,marginBottom:6,fontFamily:"'Inter',sans-serif"}}>
+                  {m.icon} {m.label}
+                </button>
+              ))}
+              <button onClick={runBatch} disabled={batchRunning||!batchTargets.trim()}
+                style={{...S.btn(),width:"100%",marginTop:4,opacity:batchRunning||!batchTargets.trim()?0.5:1,justifyContent:"center",display:"flex",alignItems:"center",gap:6}}>
+                {batchRunning?<><span className="spin">⟳</span> En cours…</>:"🚀 Lancer"}
+              </button>
+            </div>
+          </div>
+          {batchResults.length>0&&(
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--text)",marginBottom:8}}>{batchResults.filter(r=>r.status==="done").length}/{batchResults.length} analyses terminées</div>
+              {batchResults.map((r,i)=>{
+                const sc=r.report?.risk?.score||0;
+                const col=sc<30?"var(--green)":sc<60?"var(--amber)":"var(--red)";
+                return (
+                  <div key={i} style={{...S.card({marginBottom:7,border:`1px solid ${r.status==="done"?col+"33":"var(--border)"}`,display:"flex",alignItems:"center",gap:10})}} className="fade">
+                    <div style={{width:8,height:8,borderRadius:"50%",background:r.status==="loading"?"var(--amber)":r.status==="done"?col:"var(--red)",animation:r.status==="loading"?"pulse 1s infinite":"",flexShrink:0}}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>{r.query}</div>
+                      {r.status==="done"&&r.report?.executive_summary&&<div style={{fontSize:11,color:"var(--muted)",marginTop:2}}>{r.report.executive_summary.slice(0,100)}…</div>}
+                      {r.status==="error"&&<div style={{fontSize:11,color:"var(--red)",marginTop:2}}>{r.error}</div>}
+                    </div>
+                    {r.status==="done"&&<span style={{fontSize:12,fontWeight:700,color:col}}>⚠ {sc}/100</span>}
+                    {r.status==="loading"&&<span style={{fontSize:11,color:"var(--amber)"}} className="pulse">Analyse…</span>}
+                    {r.status==="done"&&<button onClick={()=>{setReport(r.report);setMode(MODES.find(m=>m.id===batchMode)||MODES[0]);setQuery(r.query);setScreen("report");}} style={{...S.btn(col,true),fontSize:10,padding:"5px 10px"}}>Voir →</button>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* USERNAME */}
+      {screen==="username"&&(
+        <div style={{maxWidth:860,margin:"0 auto",padding:"20px 16px"}} className="fade">
+          <div style={{fontSize:18,fontWeight:800,color:"var(--text)",marginBottom:4}}>🔍 Username Checker</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Vérifiez la présence d'un pseudonyme sur 50+ plateformes. GitHub et Reddit sont vérifiés en temps réel via leurs APIs publiques.</div>
+          <div style={{display:"flex",gap:8,marginBottom:14}}>
+            <input value={usernameInput} onChange={e=>setUsernameInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&usernameInput&&runUsername()}
+              placeholder="Entrez un username…" style={{...S.input,flex:1,fontSize:14}} autoFocus/>
+            <button onClick={runUsername} disabled={usernameLoading||!usernameInput.trim()}
+              style={{...S.btn("var(--blue)"),opacity:usernameLoading||!usernameInput.trim()?0.5:1,minWidth:120,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
+              {usernameLoading?<><span className="spin">⟳</span> Scan…</>:"Analyser →"}
+            </button>
+          </div>
+          {usernameRes?.error&&<div style={{color:"var(--red)",marginBottom:10,fontSize:12}}>Erreur: {usernameRes.error}</div>}
+          {usernameRes?.api_results&&(
+            <div style={{...S.card({border:"1px solid rgba(34,197,94,.3)",marginBottom:14})}}>
+              <div style={{fontSize:10,color:"var(--green)",marginBottom:8,letterSpacing:1,fontWeight:700}}>✅ VÉRIFICATION API (résultats réels)</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {Object.entries(usernameRes.api_results).map(([name,status])=>(
+                  <div key={name} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 10px",borderRadius:6,background:status==="found"?"rgba(34,197,94,.1)":"rgba(239,68,68,.08)",border:`1px solid ${status==="found"?"rgba(34,197,94,.3)":"rgba(239,68,68,.2)"}`}}>
+                    <span style={{width:7,height:7,borderRadius:"50%",background:status==="found"?"var(--green)":"var(--red)",display:"inline-block"}}/>
+                    <span style={{fontSize:12,color:"var(--text)"}}>{name}</span>
+                    <span style={{fontSize:10,color:status==="found"?"var(--green)":"var(--red)"}}>{status==="found"?"✓ Trouvé":"✗ Absent"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {usernameRes?.links&&(
+            <div>
+              <div style={{fontSize:12,color:"var(--muted)",marginBottom:10}}>Liens directs — {usernameRes.total} plateformes</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:5}}>
+                {usernameRes.links.map(p=>{
+                  const confirmed = usernameRes.api_results?.[p.name]==="found";
+                  const absent    = usernameRes.api_results?.[p.name]==="notfound";
+                  return (
+                    <a key={p.name} href={p.url} target="_blank"
+                      style={{background:"var(--bg)",border:`1px solid ${confirmed?"rgba(34,197,94,.4)":absent?"rgba(239,68,68,.2)":"var(--border)"}`,borderRadius:7,padding:"8px 10px",textDecoration:"none",transition:"all .15s"}}
+                      onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--blue)";e.currentTarget.style.background="rgba(59,130,246,.05)";}}
+                      onMouseLeave={e=>{e.currentTarget.style.borderColor=confirmed?"rgba(34,197,94,.4)":absent?"rgba(239,68,68,.2)":"var(--border)";e.currentTarget.style.background="var(--bg)";}}>
+                      <div style={{fontSize:11,fontWeight:600,color:confirmed?"var(--green)":absent?"var(--red)":"var(--text)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
+                      {confirmed&&<div style={{fontSize:9,color:"var(--green)"}}>✓ Confirmé</div>}
+                      {absent&&<div style={{fontSize:9,color:"var(--red)"}}>✗ Absent</div>}
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CASES */}
+      {screen==="cases"&&(
+        <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+          <div style={{width:240,background:"var(--bg2)",borderRight:"1px solid var(--border)",padding:14,overflowY:"auto",flexShrink:0}}>
+            <div style={{fontSize:10,color:"var(--muted)",letterSpacing:1,marginBottom:8}}>NOUVEAU DOSSIER</div>
+            <div style={{display:"flex",gap:6,marginBottom:14}}>
+              <input value={newCaseName} onChange={e=>setNewCaseName(e.target.value)} placeholder="Nom du sujet…"
+                onKeyDown={e=>e.key==="Enter"&&createCase()} style={{...S.input,flex:1,fontSize:12}}/>
+              <button onClick={createCase} style={S.btn()}>+</button>
+            </div>
+            <div style={{fontSize:10,color:"var(--muted)",letterSpacing:1,marginBottom:8}}>DOSSIERS ({cases.length})</div>
+            {cases.map(c=>(
+              <div key={c.id} onClick={()=>setActiveCase(c.id)}
+                style={{padding:10,borderRadius:8,marginBottom:5,cursor:"pointer",background:activeCase===c.id?"rgba(59,130,246,.1)":"var(--bg)",border:`1px solid ${activeCase===c.id?"var(--blue)":"var(--border)"}`}}>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:2}}>{c.name}</div>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <span style={{fontSize:10,color:"var(--muted)"}}>{c.created_at?.slice(0,10)}</span>
+                  {c.risk>0&&<span style={{fontSize:10,color:c.risk<30?"var(--green)":c.risk<60?"var(--amber)":"var(--red)"}}>⚠ {c.risk}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{flex:1,padding:20,overflowY:"auto"}}>
+            {activeCase?(()=>{
+              const c=cases.find(x=>x.id===activeCase);
+              if(!c) return null;
+              const tl = (() => { try { return JSON.parse(c.timeline||'[]'); } catch { return []; }})();
+              return (
+                <div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18,flexWrap:"wrap",gap:8}}>
+                    <div>
+                      <div style={{fontSize:20,fontWeight:800,color:"var(--text)"}}>{c.name}</div>
+                      <div style={{fontSize:11,color:"var(--muted)"}}>Créé le {c.created_at?.slice(0,10)}</div>
+                    </div>
+                    <div style={{display:"flex",gap:7}}>
+                      <button onClick={()=>{setQuery(c.name);setMode(MODES[0]);setScreen("search");}} style={S.btn()}>🔍 Analyser</button>
+                      <select value={c.status} onChange={e=>updateCase(c.id,{status:e.target.value})}
+                        style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:6,color:"var(--text)",padding:"7px 10px",fontSize:12,fontFamily:"'Inter',sans-serif"}}>
+                        <option>En cours</option><option>Terminé</option><option>Archivé</option>
+                      </select>
+                      <button onClick={()=>deleteCase(c.id)} style={S.btn("var(--red)",true)}>🗑</button>
+                    </div>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div style={S.card()}>
+                      <div style={{fontSize:10,color:"var(--amber)",marginBottom:10,letterSpacing:1,fontWeight:700}}>⏱ TIMELINE</div>
+                      <div style={{position:"relative",paddingLeft:18}}>
+                        <div style={{position:"absolute",left:6,top:0,bottom:0,width:2,background:"var(--border)"}}/>
+                        {tl.map((t,i)=>(
+                          <div key={i} style={{position:"relative",marginBottom:10,paddingLeft:12}}>
+                            <div style={{position:"absolute",left:-6,top:4,width:9,height:9,borderRadius:"50%",background:t.type==="auto"?"var(--cyan)":"var(--amber)",border:"2px solid var(--bg)"}}/>
+                            <div style={{fontSize:10,color:"var(--muted)"}}>{t.date}</div>
+                            <div style={{fontSize:12,color:"var(--text)"}}>{t.event}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{display:"flex",gap:6,marginTop:8}}>
+                        <input id={`tl-input-${c.id}`} placeholder="Ajouter une note…" style={{...S.input,flex:1,fontSize:11}}
+                          onKeyDown={e=>{if(e.key==="Enter"&&e.target.value){const note=e.target.value;e.target.value="";const newTl=[...tl,{date:new Date().toLocaleDateString('fr-FR'),event:note,type:"manual"}];updateCase(c.id,{timeline:newTl});}}}/>
+                        <button onClick={()=>{const inp=document.getElementById(`tl-input-${c.id}`);if(inp?.value){const note=inp.value;inp.value="";const newTl=[...tl,{date:new Date().toLocaleDateString('fr-FR'),event:note,type:"manual"}];updateCase(c.id,{timeline:newTl});}}} style={S.btn("var(--amber)")}>+</button>
+                      </div>
+                    </div>
+                    <div style={S.card()}>
+                      <div style={{fontSize:10,color:"var(--blue)",marginBottom:8,letterSpacing:1,fontWeight:700}}>📝 NOTES</div>
+                      <textarea value={c.notes||""} rows={8} onChange={e=>updateCase(c.id,{notes:e.target.value})}
+                        placeholder="Notes libres…" style={{...S.input,resize:"vertical",fontSize:12}}/>
+                    </div>
+                  </div>
+                </div>
+              );
+            })():(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:"var(--muted)",fontSize:13}}>
+                Sélectionnez ou créez un dossier
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* FRAMEWORK */}
+      {screen==="framework"&&(
+        <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+          <div style={{width:190,background:"var(--bg2)",borderRight:"1px solid var(--border)",padding:12,overflowY:"auto",flexShrink:0}}>
+            {[
+              {id:"identity",label:"Identité",icon:"👤",color:"var(--cyan)"},
+              {id:"social",label:"Réseaux",icon:"🌐",color:"var(--pink)"},
+              {id:"records",label:"Registres",icon:"📁",color:"var(--purple)"},
+              {id:"media",label:"Médias",icon:"🖼️",color:"var(--amber)"},
+              {id:"geo",label:"Géoloc",icon:"📍",color:"#10b981"},
+              {id:"darkweb",label:"Dark Web",icon:"🕵️",color:"#a855f7"},
+              {id:"tech",label:"Cyber",icon:"🔐",color:"var(--red)"},
+              {id:"evidence",label:"Docs & OpSec",icon:"📋",color:"#38bdf8"},
+            ].map(cat=>(
+              <div key={cat.id} style={{padding:"7px 10px",borderRadius:6,marginBottom:3,cursor:"pointer",fontSize:12,color:"var(--muted)",display:"flex",alignItems:"center",gap:7}}
+                onClick={()=>{}}
+                onMouseEnter={e=>{e.currentTarget.style.color=cat.color;e.currentTarget.style.background=cat.color+"10";}}
+                onMouseLeave={e=>{e.currentTarget.style.color="var(--muted)";e.currentTarget.style.background="transparent";}}>
+                {cat.icon} {cat.label}
+              </div>
+            ))}
+          </div>
+          <div style={{flex:1,padding:20,overflowY:"auto"}}>
+            <div style={{fontSize:18,fontWeight:800,color:"var(--text)",marginBottom:4}}>🗺️ OSINT Framework</div>
+            <div style={{fontSize:12,color:"var(--muted)",marginBottom:16}}>Bibliothèque complète avec liens directs vers chaque outil.</div>
+            {[
+              {id:"identity",label:"👤 Identité & Personnes",color:"var(--cyan)",tools:[
+                {name:"Sherlock",url:"https://github.com/sherlock-project/sherlock",desc:"Username multi-plateformes"},
+                {name:"Namechk",url:"https://namechk.com",desc:"Disponibilité username"},
+                {name:"WhatsMyName",url:"https://whatsmyname.app",desc:"Username OSINT"},
+                {name:"Have I Been Pwned",url:"https://haveibeenpwned.com",desc:"Fuites email"},
+                {name:"Hunter.io",url:"https://hunter.io",desc:"Emails & domaines"},
+                {name:"PhoneInfoga",url:"https://github.com/sundowndev/phoneinfoga",desc:"OSINT téléphone"},
+                {name:"IPInfo",url:"https://ipinfo.io",desc:"Géoloc IP"},
+                {name:"Shodan",url:"https://shodan.io",desc:"Devices exposés"},
+              ]},
+              {id:"social",label:"🌐 Réseaux & Communautés",color:"var(--pink)",tools:[
+                {name:"Social Searcher",url:"https://social-searcher.com",desc:"Recherche sociale"},
+                {name:"Whopostedwhat",url:"https://whopostedwhat.com",desc:"Posts Facebook"},
+                {name:"TGStat",url:"https://tgstat.com",desc:"Telegram analytics"},
+                {name:"Camas Reddit",url:"https://camas.unddit.com",desc:"Recherche Reddit"},
+                {name:"Boardreader",url:"https://boardreader.com",desc:"Forums & boards"},
+              ]},
+              {id:"records",label:"📁 Registres Officiels",color:"var(--purple)",tools:[
+                {name:"PAPPERS",url:"https://pappers.fr",desc:"Sociétés FR + API"},
+                {name:"Infogreffe",url:"https://infogreffe.fr",desc:"Actes officiels"},
+                {name:"Societe.com",url:"https://societe.com",desc:"Données entreprises"},
+                {name:"OpenCorporates",url:"https://opencorporates.com",desc:"International"},
+                {name:"OpenSanctions",url:"https://opensanctions.org",desc:"Sanctions & PEP"},
+                {name:"BODACC",url:"https://bodacc.fr",desc:"Annonces légales"},
+                {name:"OFAC",url:"https://sanctionssearch.ofac.treas.gov",desc:"Sanctions US"},
+              ]},
+              {id:"media",label:"🖼️ Médias & Archives",color:"var(--amber)",tools:[
+                {name:"TinEye",url:"https://tineye.com",desc:"Reverse image search"},
+                {name:"Google Lens",url:"https://images.google.com",desc:"Image search"},
+                {name:"FotoForensics",url:"https://fotoforensics.com",desc:"Analyse forensique"},
+                {name:"InVID WeVerify",url:"https://weverify.eu",desc:"Vérification vidéo"},
+                {name:"Wayback Machine",url:"https://web.archive.org",desc:"Archives web"},
+                {name:"Archive.ph",url:"https://archive.ph",desc:"Archives récentes"},
+              ]},
+              {id:"tech",label:"🔐 Cybersécurité",color:"var(--red)",tools:[
+                {name:"VirusTotal",url:"https://virustotal.com",desc:"Réputation IP/domaine"},
+                {name:"Censys",url:"https://censys.io",desc:"Hosts & certificates"},
+                {name:"GreyNoise",url:"https://greynoise.io",desc:"IP noise vs signal"},
+                {name:"URLScan.io",url:"https://urlscan.io",desc:"Analyse sites web"},
+                {name:"Any.run",url:"https://any.run",desc:"Sandbox malware"},
+                {name:"CyberChef",url:"https://gchq.github.io/CyberChef",desc:"Encodage/décodage"},
+                {name:"Maltego",url:"https://maltego.com",desc:"Graph OSINT"},
+              ]},
+              {id:"evidence",label:"📋 Documentation & OpSec",color:"#38bdf8",tools:[
+                {name:"Hunchly",url:"https://hunch.ly",desc:"Evidence capture"},
+                {name:"Bellingcat Toolkit",url:"https://bellingcat.gitbook.io",desc:"Guide OSINT"},
+                {name:"Tails OS",url:"https://tails.boum.org",desc:"OS sécurisé"},
+                {name:"Tor Browser",url:"https://torproject.org",desc:"Navigation anonyme"},
+                {name:"OSINT Curious",url:"https://osintcurio.us",desc:"Formation OSINT"},
+                {name:"TryHackMe",url:"https://tryhackme.com",desc:"Labs pratiques"},
+              ]},
+            ].map(cat=>(
+              <div key={cat.id} style={{marginBottom:18}}>
+                <div style={{fontSize:12,fontWeight:700,color:cat.color,marginBottom:8,letterSpacing:1}}>{cat.label}</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:7}}>
+                  {cat.tools.map(t=>(
+                    <a key={t.name} href={t.url} target="_blank"
+                      style={{background:"var(--bg)",border:`1px solid ${cat.color}22`,borderRadius:8,padding:"10px 12px",textDecoration:"none",transition:"all .15s"}}
+                      onMouseEnter={e=>{e.currentTarget.style.borderColor=cat.color;e.currentTarget.style.background=cat.color+"08";}}
+                      onMouseLeave={e=>{e.currentTarget.style.borderColor=cat.color+"22";e.currentTarget.style.background="var(--bg)";}}>
+                      <div style={{fontSize:12,fontWeight:700,color:cat.color,marginBottom:2}}>{t.name}</div>
+                      <div style={{fontSize:10,color:"var(--muted)"}}>{t.desc}</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
